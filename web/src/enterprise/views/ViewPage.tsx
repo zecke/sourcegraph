@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
 import { useView } from './useView'
+import { ViewForm } from './forms/ViewForm'
 
 interface Props extends ExtensionsControllerProps<'services'> {
     viewID: string
@@ -29,19 +30,16 @@ export const ViewPage: React.FunctionComponent<Props> = ({ viewID, extensionsCon
     }
 
     const { view, form } = data
-
-    if (form === null) {
-        return (
-            <div className="alert alert-danger">
-                View form not found: <code>{view.form}</code>
-            </div>
-        )
-    }
-
     return (
         <div>
             <h1>{view.id}</h1>
-            <p>{form?.id}</p>
+            {form === undefined ? null : form === null ? (
+                <div className="alert alert-danger">
+                    View form not found: <code>{view.form}</code>
+                </div>
+            ) : (
+                <ViewForm form={form} extensionsController={extensionsController} />
+            )}
         </div>
     )
 }

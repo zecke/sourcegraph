@@ -297,6 +297,22 @@ export interface FormContribution {
      * The JSON Schema for the value represented by this form.
      */
     schema: { [key: string]: any }
+
+    /**
+     * Form submission.
+     */
+    submit: {
+        /**
+         * The command to invoke when submitting the form. The command receives the form value as
+         * the first argument.
+         */
+        command: string
+
+        /**
+         * The submit button label.
+         */
+        label?: string
+    }
 }
 
 /**
