@@ -6,6 +6,7 @@ import { registerHighlightContributions } from '../../shared/src/highlight/contr
 import { registerHoverContributions } from '../../shared/src/hover/actions'
 import { PlatformContextProps } from '../../shared/src/platform/context'
 import { registerSearchStatsContributions } from './enterprise/search/stats/contributions'
+import { registerSearchHelperSampleContributions } from './enterprise/views/searchHelperSample/contributions'
 
 interface Props extends ExtensionsControllerProps, PlatformContextProps {
     history: H.History
@@ -22,6 +23,7 @@ export class GlobalContributions extends React.Component<Props> {
         registerHighlightContributions() // no way to unregister these
         this.subscriptions.add(registerHoverContributions(this.props))
         this.subscriptions.add(registerSearchStatsContributions(this.props))
+        this.subscriptions.add(registerSearchHelperSampleContributions(this.props))
     }
 
     public componentWillUnmount(): void {

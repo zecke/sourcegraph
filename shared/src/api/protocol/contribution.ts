@@ -32,6 +32,12 @@ export interface Contributions {
     /** Menu items contributed by the extension. */
     menus?: MenuContributions
 
+    /** Forms contributed by the extension. */
+    forms?: FormContribution[]
+
+    /** Views contributed by the extension. */
+    views?: ViewContribution[]
+
     /** Search filters contributed by the extension */
     searchFilters?: SearchFilters[]
 }
@@ -276,6 +282,37 @@ export interface MenuItemContribution {
      * group sorting last. The client must not display the group value.
      */
     group?: string
+}
+
+/**
+ * A form contributed by an extension.
+ */
+export interface FormContribution {
+    /**
+     * The identifier for this form, which must be unique among all contributed forms.
+     */
+    id: string
+
+    /**
+     * The JSON Schema for the value represented by this form.
+     */
+    schema: { [key: string]: any }
+}
+
+/**
+ * A view contributed by an extension.
+ */
+export interface ViewContribution {
+    /**
+     * The identifier for this view, which must be unique among all contributed views.
+     */
+    id: string
+
+    /**
+     * The form to display on this view (specified by the form ID as defined in the `forms`
+     * contributions).
+     */
+    form?: string
 }
 
 /**
