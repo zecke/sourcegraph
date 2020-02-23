@@ -1,10 +1,15 @@
 import { useState, useMemo } from 'react'
-import { Observable } from 'rxjs'
+import { Observable, combineLatest } from 'rxjs'
 import { Contributions, ViewContribution, FormContribution, Evaluated } from '../../../../shared/src/api/protocol'
 import { useObservable } from '../../util/useObservable'
 import { map, tap } from 'rxjs/operators'
+import {
+    PanelViewWithComponent,
+    ViewProviderRegistry,
+    ViewProviderRegistrationOptions,
+} from '../../../../shared/src/api/client/services/view'
 
-interface ViewAndFormContribution {
+interface ViewData {
     /**
      * The view.
      */
@@ -14,6 +19,11 @@ interface ViewAndFormContribution {
      * The form, `undefined` if none is defined, or `null` if a form is defined but not found.
      */
     form?: FormContribution | null
+
+    /**
+     * The view's associated panel views, if any.
+     */
+    panelViews?: (PanelViewWithComponent & Pick<ViewProviderRegistrationOptions, 'id'>)[]
 }
 
 /**
@@ -22,28 +32,33 @@ interface ViewAndFormContribution {
  */
 export const useView = (
     viewID: string,
-    contributions: Observable<Evaluated<Contributions>>
-): ViewAndFormContribution | undefined | null => {
-    const [result, setResult] = useState<ViewAndFormContribution | undefined | null>()
+    contributions: Observable<Evaluated<Contributions>>,
+    viewProviderRegistry: ViewProviderRegistry
+): ViewData | undefined | null => {
+    const [result, setResult] = useState<ViewData | undefined | null>()
 
     useObservable(
         useMemo(
             () =>
-                contributions.pipe(
-                    map(contributions => {
-                        const view = contributions.views?.find(({ id }) => id === viewID)
-                        if (!view) {
-                            return null
-                        }
-                        if (!view.form) {
-                            return { view }
-                        }
-                        const form = contributions.forms?.find(({ id }) => id === view.form) ?? null
-                        return { view, form }
-                    }),
-                    tap(setResult)
+                combineLatest([
+                    contributions.pipe(
+                        map(contributions => {
+                            const view = contributions.views?.find(({ id }) => id === viewID)
+                            if (!view) {
+                                return null
+                            }
+                            if (!view.form) {
+                                return { view }
+                            }
+                            const form = contributions.forms?.find(({ id }) => id === view.form) ?? null
+                            return { view, form }
+                        })
+                    ),
+                    viewProviderRegistry.getView(viewID).pipe(map(panelView => (panelView ? [panelView] : undefined))),
+                ]).pipe(
+                    tap(([viewAndForm, panelViews]) => setResult(viewAndForm ? { ...viewAndForm, panelViews } : null))
                 ),
-            [contributions, viewID]
+            [contributions, viewID, viewProviderRegistry]
         )
     )
 

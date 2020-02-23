@@ -299,6 +299,12 @@ export interface FormContribution {
     schema: { [key: string]: any }
 
     /**
+     * The UI schema, used when rendering the form. See
+     * https://react-jsonschema-form.readthedocs.io/en/latest/form-customization/#the-uischema-object.
+     */
+    uiSchema?: { [key: string]: any }
+
+    /**
      * Form submission.
      */
     submit: {
@@ -313,6 +319,11 @@ export interface FormContribution {
          */
         label?: string
     }
+
+    /**
+     * The (optional) command to invoke when the form's value is edited by the user.
+     */
+    change?: string
 }
 
 /**
@@ -323,6 +334,11 @@ export interface ViewContribution {
      * The identifier for this view, which must be unique among all contributed views.
      */
     id: string
+
+    /**
+     * The title of this view.
+     */
+    title?: string
 
     /**
      * The form to display on this view (specified by the form ID as defined in the `forms`

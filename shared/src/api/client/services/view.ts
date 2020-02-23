@@ -35,7 +35,7 @@ export class ViewProviderRegistry extends FeatureProviderRegistry<
      * Returns an observable that emits the specified view whenever it or the set of registered view providers
      * changes. If the provider emits an error, the returned observable also emits an error (and completes).
      */
-    public getView(id: string): Observable<PanelViewWithComponent | null> {
+    public getView(id: string): Observable<(PanelViewWithComponent & ViewProviderRegistrationOptions) | null> {
         return getView(this.entries, id)
     }
 

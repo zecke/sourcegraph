@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	regexpsyntax "regexp/syntax"
@@ -511,6 +512,30 @@ func resolveRepositories(ctx context.Context, op resolveRepoOp) (repoRevisions, 
 		defaultRepos, err = defaultRepositories(ctx, db.DefaultRepos.List, getIndexedRepos)
 		if err != nil {
 			return nil, nil, false, errors.Wrap(err, "getting list of default repos")
+		}
+	}
+
+	// TODO!(sqs): HACK: special case where all repos are specified literally, then search over all
+	// of them and treat their revspecs as associated with a single repo. For example, `repo:^a$@v0
+	// repo:^b$@v1` would search repository `a` at `v0` and repository `b` at `v1`. This is
+	// different from the usual behavior, which would try to find repositories that match both ^a$
+	// and ^b$, which is impossible, so it would return no repositories.
+	{
+		anyNonLiteral := false
+		repoNames := make([]string, len(includePatternRevs))
+		for i, patStr := range includePatterns {
+			p, _ := regexp.Compile(patStr)
+			prefix, complete := p.LiteralPrefix()
+			log.Printf("includePattern=%+v prefix=%q complete=%v", p, prefix, complete)
+			if !complete || !strings.HasPrefix(patStr, "^") || !strings.HasSuffix(patStr, "$") {
+				anyNonLiteral = true
+				break
+			}
+			repoNames[i] = prefix
+		}
+		log.Printf("anyNonLiteral=%v, repoNames=%v", anyNonLiteral, repoNames)
+		if !anyNonLiteral {
+			includePatterns = []string{unionRegExps(repoNames)}
 		}
 	}
 

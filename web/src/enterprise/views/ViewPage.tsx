@@ -2,6 +2,8 @@ import React, { useMemo } from 'react'
 import { ExtensionsControllerProps } from '../../../../shared/src/extensions/controller'
 import { useView } from './useView'
 import { ViewForm } from './forms/ViewForm'
+import { Markdown } from '../../../../shared/src/components/Markdown'
+import { renderMarkdown } from '../../../../shared/src/util/markdown'
 
 interface Props extends ExtensionsControllerProps<'services'> {
     viewID: string
@@ -15,7 +17,8 @@ export const ViewPage: React.FunctionComponent<Props> = ({ viewID, extensionsCon
         viewID,
         useMemo(() => extensionsController.services.contribution.getContributions(), [
             extensionsController.services.contribution,
-        ])
+        ]),
+        extensionsController.services.views
     )
 
     if (data === undefined) {
@@ -29,10 +32,10 @@ export const ViewPage: React.FunctionComponent<Props> = ({ viewID, extensionsCon
         )
     }
 
-    const { view, form } = data
+    const { view, form, panelViews } = data
     return (
         <div>
-            <h1>{view.id}</h1>
+            <h1>{view.title !== undefined ? view.title : view.id}</h1>
             {form === undefined ? null : form === null ? (
                 <div className="alert alert-danger">
                     View form not found: <code>{view.form}</code>
@@ -40,6 +43,14 @@ export const ViewPage: React.FunctionComponent<Props> = ({ viewID, extensionsCon
             ) : (
                 <ViewForm form={form} extensionsController={extensionsController} />
             )}
+            {panelViews?.map(panelView => (
+                <section key={panelView.id} className="card mt-3">
+                    {panelView.title !== '' && <h3 className="card-header">{panelView.title}</h3>}
+                    {panelView.content && (
+                        <Markdown className="card-body" dangerousInnerHTML={renderMarkdown(panelView.content)} />
+                    )}
+                </section>
+            ))}
         </div>
     )
 }
