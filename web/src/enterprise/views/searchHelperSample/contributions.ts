@@ -72,6 +72,13 @@ export function registerSearchHelperSampleContributions({
                                     enum: VERSIONS,
                                     default: VERSIONS[0],
                                 },
+                                language: {
+                                    title: 'Language',
+                                    type: 'string',
+                                    enum: ['', 'java', 'python', 'javascript', 'cpp'],
+                                    enumNames: ['All', 'Java', 'Python', 'JavaScript', 'C++'],
+                                    default: '',
+                                },
                             },
                         },
                         submit: {
@@ -89,6 +96,7 @@ export function registerSearchHelperSampleContributions({
     interface FormValue {
         query: string
         version: Version
+        language: string
     }
     const formValue = new BehaviorSubject<FormValue | undefined>(undefined)
     subscriptions.add(
@@ -99,9 +107,14 @@ export function registerSearchHelperSampleContributions({
                 const repoCommitFilters = Object.entries(repoCommits).map(
                     ([repo, commit]) => `repo:^${escapeRegExp(repo)}$@${commit}`
                 )
+                const langFilters = value.language ? [`lang:${value.language}`] : []
                 await extensionsController.services.commands.executeCommand({
                     command: 'open',
-                    arguments: [`/search?q=${encodeURIComponent([value.query, ...repoCommitFilters].join(' '))}`],
+                    arguments: [
+                        `/search?q=${encodeURIComponent(
+                            [value.query, ...langFilters, ...repoCommitFilters].join(' ')
+                        )}`,
+                    ],
                 })
             },
         })
