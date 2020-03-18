@@ -77,6 +77,9 @@ type TextParameters struct {
 	// ignored by Pattern, such as index:no
 	Query *query.Query
 
+	// The future is now.
+	NouveauQuery []Node
+
 	// UseFullDeadline indicates that the search should try do as much work as
 	// it can within context.Deadline. If false the search should try and be
 	// as fast as possible, even if a "slow" deadline is set.

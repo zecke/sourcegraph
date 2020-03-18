@@ -108,8 +108,14 @@ func NewSearchImplementer(args *SearchArgs) (SearchImplementer, error) {
 		return nil, errors.New("Search: paginated requests providing a 'after' but no 'first' is forbidden")
 	}
 
+	nouveauQuery, err := search.Parse(args.Query)
+	if err != nil {
+		log15.Info("Uh oh rai!", "look", err.Error())
+	}
+
 	return &searchResolver{
 		query:         q,
+		nouveauQuery:  nouveauQuery,
 		parseTree:     p,
 		originalQuery: args.Query,
 		pagination:    pagination,
@@ -175,6 +181,7 @@ func detectSearchType(version string, patternType *string, input string) (query.
 // searchResolver is a resolver for the GraphQL type `Search`
 type searchResolver struct {
 	query         *query.Query          // the validated search query
+	nouveauQuery  []search.Node         // the future is now.
 	parseTree     syntax.ParseTree      // the parsed search query
 	originalQuery string                // the raw string of the original search query
 	pagination    *searchPaginationInfo // pagination information, or nil if the request is not paginated.

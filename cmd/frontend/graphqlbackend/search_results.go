@@ -471,13 +471,7 @@ var searchResponseCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help:      "Number of searches that have ended in the given status (success, error, timeout, partial_timeout).",
 }, []string{"status", "alert_type"})
 
-func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, error) {
-	// If the request is a paginated one, we handle it separately. See
-	// paginatedResults for more details.
-	if r.pagination != nil {
-		return r.paginatedResults(ctx)
-	}
-
+func (r *searchResolver) atomicSearch(ctx context.Context) (*SearchResultsResolver, error) {
 	rr, err := r.resultsWithTimeoutSuggestion(ctx)
 
 	// Record what type of response we sent back via Prometheus.
@@ -498,8 +492,174 @@ func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, e
 		status = "unknown"
 	}
 	searchResponseCounter.WithLabelValues(status, alertType).Inc()
-
 	return rr, err
+}
+
+func intersect(left, right *SearchResultsResolver) (*SearchResultsResolver, error) {
+	log15.Info("intersect called", "yes", "yes")
+	var merged []SearchResultResolver
+	if left != nil && left.SearchResults != nil {
+		log15.Info("intersect called", "left nonnil", len(left.SearchResults))
+		if right != nil && right.SearchResults != nil {
+			log15.Info("intersect called", "right nonnil", len(right.SearchResults))
+			log15.Info("intersect", "left", len(left.SearchResults), "right", len(right.SearchResults))
+			for _, ltmp := range left.SearchResults {
+				if ltmpFileMatch, ok := ltmp.ToFileMatch(); ok {
+					// log15.Info("\t checking", "left match", ltmpFileMatch.JPath)
+					// does l exist in r?
+					for _, rtmp := range right.SearchResults {
+						if rtmpFileMatch, ok := rtmp.ToFileMatch(); ok {
+							//log15.Info("\t\t against", "right match", rtmpFileMatch.JPath)
+							if ltmpFileMatch.JPath == rtmpFileMatch.JPath {
+								log15.Info("m", "merged", ltmpFileMatch.JPath)
+								ltmpFileMatch.JLineMatches = append(ltmpFileMatch.JLineMatches, rtmpFileMatch.JLineMatches...)
+								merged = append(merged, ltmp)
+							}
+						}
+					}
+				}
+			}
+			log15.Info("left results set to merged", "yes", "yes")
+			left.SearchResults = merged
+			return left, nil
+		}
+	}
+	// no intersection
+	return nil, nil
+}
+
+func union(left, right *SearchResultsResolver) (*SearchResultsResolver, error) {
+	// YOLO: no union of time or alerts or searchResultsCommon
+	var resolver *SearchResultsResolver
+	log15.Info("Union called", "yes", "it was")
+	if left != nil && left.SearchResults != nil && right.SearchResults != nil {
+		log15.Info("\tUnion called", "left", "nonnil")
+		left.SearchResults = append(left.SearchResults, right.SearchResults...)
+		resolver = left
+	} else if right != nil && right.SearchResults != nil {
+		log15.Info("\tUnion called", "right", "nonnil; left nil")
+		resolver = right
+	}
+	log15.Info("Union called", "returning", "resolver now")
+	return resolver, nil
+}
+
+func (r *searchResolver) EvaluateOperator(ctx context.Context, operator search.Operator) (*SearchResultsResolver, error) {
+	log15.Info("Evaluating", "for", operator.String())
+	result := &SearchResultsResolver{}
+	var new *SearchResultsResolver
+	var err error
+	for i, node := range operator.Operands {
+		new, err = r.Evaluate(ctx, []search.Node{node})
+		if err != nil {
+			return nil, err
+		}
+		if new != nil {
+			log15.Info("Evaluated", "child. new is nonnil and ", len(new.SearchResults))
+			switch operator.Kind {
+			case search.And:
+				log15.Info("Evaluating", "intersect on", "children")
+				if i == 0 { // this doesn't work, because it's only true if we don't have other params like repo:foo
+					// If this is the first value, don't intersect it with result nil, intersect will return nil.
+					log15.Info("intersect", "only one", "setting result to new")
+					result = new
+				} else {
+					result, err = intersect(result, new) // set difference
+					if result == nil {
+						log15.Info("intersect", "was", "nil result after nonnil intersect of result and new")
+					}
+				}
+			case search.Or:
+				log15.Info("Evaluating", "union on", "children")
+				result, err = union(result, new)
+				if result == nil {
+					log15.Info("union", "was", "nil result")
+				}
+			}
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			if operator.Kind == search.And {
+				log15.Info("XX Eval operator on AND", "is nil", "clearing")
+				return nil, nil // nil result on and implies no matches
+			}
+
+			log15.Info("Evaluated", "child. ", "it was nil. probably a non-content param like repo:")
+		}
+	}
+	if result == nil {
+		if operator.Kind == search.And {
+			log15.Info("Eval operator on AND", "is nil", "clearing")
+			return nil, nil // nil result on and implies no matches
+		}
+		log15.Info("Eval operator result", "is nil", "did not expect")
+	}
+	return result, nil
+}
+
+func (r *searchResolver) Evaluate(ctx context.Context, nodes []search.Node) (*SearchResultsResolver, error) {
+	result := &SearchResultsResolver{}
+	var new *SearchResultsResolver
+	var err error
+	for _, node := range nodes {
+		switch term := node.(type) {
+		case search.Operator:
+			log15.Info("Op", "for", term.String())
+			new, err = r.EvaluateOperator(ctx, term)
+			if err != nil {
+				return nil, err
+			}
+			if new != nil {
+				result, err = union(result, new)
+				if err != nil {
+					return nil, err
+				}
+			}
+		case search.Parameter:
+			log15.Info("Param", "is", term.Value)
+			if term.Field == "" {
+				log15.Info("Atomic search", "for", term.Value)
+				log15.Info("Query before mod", "for", r.query)
+				//val := querytypes.Value{String: &term.Value}
+				//r.query.Fields[query.FieldDefault] = []*querytypes.Value{&val}
+				// HACK to get around the issue where we can't well distinguish between repo:foo and <pattern>
+				//m := "mux"
+				//valu := querytypes.Value{String: &m}
+				//r.query.Fields[query.FieldRepo] = []*querytypes.Value{&valu}
+				q, p, _ := query.Process("repo:mux lang:go "+term.Value, query.SearchTypeRegex)
+				r.query = q
+				r.parseTree = p
+				r.originalQuery = "repo:mux lang:go " + term.Value
+				log15.Info("Query after mod", "for", r.query)
+				new, err = r.atomicSearch(ctx)
+				if err != nil {
+					return nil, err
+				}
+				if new != nil {
+					result, err = union(result, new)
+					log15.Info("union", "new", len(new.SearchResults))
+					if err != nil {
+						return nil, err
+					}
+				}
+			} else {
+				return nil, nil // this means that any param that is not content won't be a candidate for merging results when evaling operator
+			}
+		}
+	}
+	return result, nil
+}
+
+func (r *searchResolver) Results(ctx context.Context) (*SearchResultsResolver, error) {
+	// If the request is a paginated one, we handle it separately. See
+	// paginatedResults for more details.
+	if r.pagination != nil {
+		return r.paginatedResults(ctx)
+	}
+
+	// return r.atomicSearch(ctx)
+	return r.Evaluate(ctx, r.nouveauQuery)
 }
 
 // resultsWithTimeoutSuggestion calls doResults, and in case of deadline
@@ -1002,6 +1162,7 @@ func (r *searchResolver) doResults(ctx context.Context, forceOnlyResultType stri
 		PatternInfo:     p,
 		Repos:           repos,
 		Query:           r.query,
+		NouveauQuery:    r.nouveauQuery,
 		UseFullDeadline: r.searchTimeoutFieldSet(),
 		Zoekt:           r.zoekt,
 		SearcherURLs:    r.searcherURLs,
