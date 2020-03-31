@@ -358,6 +358,7 @@ type patternRevspec struct {
 // revspecs (or ref globs), and if so, return the matching/allowed ones.
 func getRevsForMatchedRepo(repo api.RepoName, pats []patternRevspec) (matched []search.RevisionSpecifier, clashing []search.RevisionSpecifier) {
 	revLists := make([][]search.RevisionSpecifier, 0, len(pats))
+	log15.Info("Rij", "pats for repo", "", "repo", repo, "pats", pats)
 	for _, rev := range pats {
 		if rev.includePattern.MatchString(string(repo)) {
 			revLists = append(revLists, rev.revs)
@@ -377,6 +378,7 @@ func getRevsForMatchedRepo(repo api.RepoName, pats []patternRevspec) (matched []
 	// we want their intersection
 	allowedRevs := make(map[search.RevisionSpecifier]struct{}, len(revLists[0]))
 	allRevs := make(map[search.RevisionSpecifier]struct{}, len(revLists[0]))
+	log15.Info("Rij", "pats for repo", "", "repo", repo, "revlists", revLists)
 	// starting point: everything is "true" if it is currently allowed
 	for _, rev := range revLists[0] {
 		allowedRevs[rev] = struct{}{}
@@ -413,25 +415,24 @@ func getRevsForMatchedRepo(repo api.RepoName, pats []patternRevspec) (matched []
 	return
 }
 
-// findPatternRevs mutates the given list of include patterns to
-// be a raw list of the repository name patterns we want, separating
-// out their revision specs, if any.
-// rij says: this is important, it will trun a list of "github...@commit,..." into patternRevspec. hopefully good enough.
-func findPatternRevs(includePatterns []string) (includePatternRevs []patternRevspec, err error) {
+// partitionPatternRevs processes include patterns to
+// be a raw list of the repository name patterns we want, returning the revision specs, and patterns stripped from the revisions, if any.
+func partitionPatternRevs(includePatterns []string) (strippedIncludePatterns []string, includePatternRevs []patternRevspec, err error) {
 	includePatternRevs = make([]patternRevspec, 0, len(includePatterns))
+	strippedIncludePatterns = includePatterns
 	for i, includePattern := range includePatterns {
 		repoPattern, revs := search.ParseRepositoryRevisions(includePattern)
 		// Validate pattern now so the error message is more recognizable to the
 		// user
 		if _, err := regexp.Compile(string(repoPattern)); err != nil {
-			return nil, &badRequestError{err}
+			return strippedIncludePatterns, nil, &badRequestError{err}
 		}
 		repoPattern = api.RepoName(optimizeRepoPatternWithHeuristics(string(repoPattern)))
-		includePatterns[i] = string(repoPattern)
+		strippedIncludePatterns[i] = string(repoPattern)
 		if len(revs) > 0 {
 			p, err := regexp.Compile("(?i:" + includePatterns[i] + ")")
 			if err != nil {
-				return nil, &badRequestError{err}
+				return strippedIncludePatterns, nil, &badRequestError{err}
 			}
 			patternRev := patternRevspec{includePattern: p, revs: revs}
 			includePatternRevs = append(includePatternRevs, patternRev)
@@ -451,7 +452,7 @@ type resolveRepoOp struct {
 	commitAfter      string
 }
 
-var re = lazyregexp.New(`@[0-9a-zA-Z-_.\/]+`)
+var re = lazyregexp.New(`@[0-9a-zA-Z-_.:\/]+`)
 
 // strips @commit part of a list of strings.
 func stripAtRevspec(in []string) (result []string) {
@@ -539,8 +540,16 @@ func resolveRepositories(ctx context.Context, op resolveRepoOp) (repoRevisions, 
 		}
 	}
 
+	// note that this mutates the strings in includePatterns, stripping their
+	// revision specs, if they had any.
+	strippedIncludePatterns, includePatternRevs, err := partitionPatternRevs(includePatterns)
+	log15.Info("Rij", "revs", includePatternRevs)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
 	var defaultRepos []*types.Repo
-	if envvar.SourcegraphDotComMode() && len(includePatterns) == 0 {
+	if envvar.SourcegraphDotComMode() && len(strippedIncludePatterns) == 0 {
 		getIndexedRepos := func(ctx context.Context, revs []*search.RepositoryRevisions) (indexed, unindexed []*search.RepositoryRevisions, err error) {
 			return zoektIndexedRepos(ctx, search.Indexed(), revs, nil)
 		}
@@ -558,12 +567,14 @@ func resolveRepositories(ctx context.Context, op resolveRepoOp) (repoRevisions, 
 			repos = repos[:maxRepoListSize]
 		}
 	} else {
-		includePatternsForLookup := includePatterns // copy because we want to modify locally
+		includePatternsForLookup := strippedIncludePatterns // copy the stripped patterns to a variable. we may want to locally modify that variable for the multi repo lookup.
 		// if a multi repo multi spec pattern, strip first so it's not part of the repo lookup.
-		if _, ok := parseMultiRepoSpec(includePatternsForLookup); ok {
-			includePatternsForLookup = stripAtRevspec(includePatternsForLookup)
+		if _, ok := parseMultiRepoSpec(includePatterns); ok { // check the original includepatterns.
+			includePatternsForLookup = stripAtRevspec(includePatterns) // override.
+			log15.Info("Rij", "revspec stripped", "for lookup")
 		}
 		tr.LazyPrintf("Repos.List - start")
+		log15.Info("Rij", "repo lookup pattern is", includePatternsForLookup)
 		repos, err = db.Repos.List(ctx, db.ReposListOptions{
 			OnlyRepoIDs:     true,
 			IncludePatterns: includePatternsForLookup,
@@ -582,29 +593,21 @@ func resolveRepositories(ctx context.Context, op resolveRepoOp) (repoRevisions, 
 		}
 	}
 
-	// use includePatterns modified for revisions on multiple different
-	// repos. We don't want to modify includePatterns earlier because that
-	// gets sent to the db lookup, and we must preserve the "|"s.
-	if patterns, ok := parseMultiRepoSpec(includePatterns); ok {
-		includePatterns = patterns // override input patterns
+	if patterns, ok := parseMultiRepoSpec(includePatterns); ok { // check original
+		_, includePatternRevs, err = partitionPatternRevs(patterns) // override includePatternRevs by processing patterns as parsed by MultiRepoSpec
+		if err != nil {
+			return nil, nil, false, err
+		}
 		log15.Info("Rij", "passed", "parseMultiRepoSpec")
-	}
-	log15.Info("Rij", "include patts AFTER", includePatterns)
-
-	// note that this mutates the strings in includePatterns, stripping their
-	// revision specs, if they had any.
-	includePatternRevs, err := findPatternRevs(includePatterns)
-	log15.Info("Rij", "revs", includePatternRevs)
-	if err != nil {
-		return nil, nil, false, err
 	}
 
 	overLimit = len(repos) >= maxRepoListSize
 
 	repoRevisions = make([]*search.RepositoryRevisions, 0, len(repos))
 	tr.LazyPrintf("Associate/validate revs - start")
+	// does for each repo, which is why the rev stuff works out fine.
 	for _, repo := range repos {
-		// this thing needs to get the include pattern revs
+		// does for each rev, gets blocked
 		revs, clashingRevs := getRevsForMatchedRepo(repo.Name, includePatternRevs)
 		repoRev := &search.RepositoryRevisions{Repo: repo}
 
