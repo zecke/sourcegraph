@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/internal/lazyregexp"
 )
 
@@ -185,13 +186,33 @@ func ScanParameter(parameter []byte) Parameter {
 	return Parameter{Field: "", Value: string(parameter)}
 }
 
-func (p *parser) ParseParameterWithParens() (Parameter, bool) {
+var relaxedFieldValuePattern = lazyregexp.New(`(^\(?-?[a-zA-Z0-9]+):(.*)\)?`)
+
+func ScanParameterString(parameter string) Parameter {
+	result := relaxedFieldValuePattern.FindStringSubmatch(parameter)
+	if result != nil {
+		if result[1][0] == '-' {
+			return Parameter{
+				Field:   string(result[1][1:]),
+				Value:   string(result[2]),
+				Negated: true,
+			}
+		}
+		return Parameter{Field: string(result[1]), Value: string(result[2])}
+	}
+	return Parameter{Field: "", Value: string(parameter)}
+}
+
+func hasField(parameter Parameter) bool {
+	return parameter.Field == ""
+}
+
+func (p *parser) ParseSearchPatternWithParens() (Parameter, bool) {
 	start := p.pos
 	balanced := 0
 	for {
 		// this means it's ok to have unbalanced parens in the pattern as long as it's escaped.
-		// we can remove the expect whitespace if we are inside a paren group.
-		if p.expect(`\ `) || p.expect(`\(`) || p.expect(`\)`) {
+		if p.expect(`\(`) || p.expect(`\)`) {
 			continue
 		}
 		if p.expect(LPAREN) {
@@ -205,7 +226,14 @@ func (p *parser) ParseParameterWithParens() (Parameter, bool) {
 		if p.done() {
 			break
 		}
-		if isSpace(p.buf[p.pos]) {
+		// inside paren
+		if balanced > 0 && (p.expect(" or ") || p.expect(" and ")) { // FIXME caps, etc.
+			// this cannot be a pattern
+			p.pos = start
+			return Parameter{Field: "", Value: ""}, false
+		}
+		// a space, not in a paren group. process otherwise
+		if isSpace(p.buf[p.pos]) && balanced <= 0 {
 			break
 		}
 		p.pos++
@@ -214,7 +242,19 @@ func (p *parser) ParseParameterWithParens() (Parameter, bool) {
 		p.pos = start // backtrack
 		return Parameter{Field: "", Value: ""}, false
 	}
-	return ScanParameter(p.buf[start:p.pos]), true
+	pattern := ScanParameter(p.buf[start:p.pos])
+	// valide this thing does not contain "repo:foo"s
+	for _, piece := range strings.Fields(pattern.Value) {
+		log15.Info("checking", "", piece)
+		result := ScanParameterString(piece)
+		if result.Field != "" {
+			// impure, return false
+			log15.Info("impure", "", piece)
+			p.pos = start // backtrack
+			return Parameter{Field: "", Value: ""}, false
+		}
+	}
+	return pattern, true
 }
 
 // ParseParameter returns valid leaf node values for AND/OR queries, taking into
@@ -338,7 +378,7 @@ loop:
 		switch {
 		case p.match(LPAREN):
 			// First try parse a parameter as a search pattern containing parens.
-			if parameter, ok := p.ParseParameterWithParens(); ok {
+			if parameter, ok := p.ParseSearchPatternWithParens(); ok {
 				nodes = append(nodes, parameter)
 			} else {
 				// If the above failed, we treat this paren
@@ -362,7 +402,7 @@ loop:
 			// Caller advances.
 			break loop
 		default:
-			if parameter, ok := p.ParseParameterWithParens(); ok {
+			if parameter, ok := p.ParseSearchPatternWithParens(); ok {
 				nodes = append(nodes, parameter)
 			} else {
 				parameter := p.ParseParameter()

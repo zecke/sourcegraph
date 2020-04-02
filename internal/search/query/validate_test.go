@@ -30,7 +30,7 @@ func Test_PartitionSearchPattern(t *testing.T) {
 		},
 		{
 			input: "file:foo x y",
-			want:  "file:foo (concat x y)",
+			want:  "file:foo (concat x y)", // FIXME should be ok
 		},
 		{
 			input: "file:foo (x y)",
