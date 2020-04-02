@@ -185,6 +185,38 @@ func ScanParameter(parameter []byte) Parameter {
 	return Parameter{Field: "", Value: string(parameter)}
 }
 
+func (p *parser) ParseParameterWithParens() (Parameter, bool) {
+	start := p.pos
+	balanced := 0
+	for {
+		// this means it's ok to have unbalanced parens in the pattern as long as it's escaped.
+		// we can remove the expect whitespace if we are inside a paren group.
+		if p.expect(`\ `) || p.expect(`\(`) || p.expect(`\)`) {
+			continue
+		}
+		if p.expect(LPAREN) {
+			balanced += 1
+			continue
+		}
+		if p.expect(RPAREN) {
+			balanced -= 1
+			continue
+		}
+		if p.done() {
+			break
+		}
+		if isSpace(p.buf[p.pos]) {
+			break
+		}
+		p.pos++
+	}
+	if balanced != 0 {
+		p.pos = start // backtrack
+		return Parameter{Field: "", Value: ""}, false
+	}
+	return ScanParameter(p.buf[start:p.pos]), true
+}
+
 // ParseParameter returns valid leaf node values for AND/OR queries, taking into
 // account escape sequences for special syntax: whitespace and parentheses.
 func (p *parser) ParseParameter() Parameter {
@@ -304,13 +336,21 @@ loop:
 			break loop
 		}
 		switch {
-		case p.expect(LPAREN):
-			p.balanced++
-			result, err := p.parseOr()
-			if err != nil {
-				return nil, err
+		case p.match(LPAREN):
+			// First try parse a parameter as a search pattern containing parens.
+			if parameter, ok := p.ParseParameterWithParens(); ok {
+				nodes = append(nodes, parameter)
+			} else {
+				// If the above failed, we treat this paren
+				// group as part of an and/or expression.
+				_ = p.expect(LPAREN) // Guaranteed to succeed.
+				p.balanced++
+				result, err := p.parseOr()
+				if err != nil {
+					return nil, err
+				}
+				nodes = append(nodes, result...)
 			}
-			nodes = append(nodes, result...)
 		case p.expect(RPAREN):
 			p.balanced--
 			if len(nodes) == 0 {
@@ -322,8 +362,12 @@ loop:
 			// Caller advances.
 			break loop
 		default:
-			parameter := p.ParseParameter()
-			nodes = append(nodes, parameter)
+			if parameter, ok := p.ParseParameterWithParens(); ok {
+				nodes = append(nodes, parameter)
+			} else {
+				parameter := p.ParseParameter()
+				nodes = append(nodes, parameter)
+			}
 		}
 	}
 	return partitionParameters(nodes), nil

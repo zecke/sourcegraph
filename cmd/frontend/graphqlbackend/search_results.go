@@ -718,6 +718,7 @@ func (r *searchResolver) evaluate(ctx context.Context, q []query.Node) (*SearchR
 		return nil, err
 	}
 	sortResults(result.SearchResults)
+	log15.Info("Saw result", "", fmt.Sprintf("size: %d", len(result.SearchResults)))
 	return result, nil
 }
 
