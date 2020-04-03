@@ -51,7 +51,6 @@ func addLint(pipeline *bk.Pipeline) {
 	// - stylelint 7s
 	// - graphql-lint 1s
 	pipeline.AddStep(":eslint:",
-		bk.Env("DEBUG", "*"),
 		bk.Cmd("dev/ci/yarn-run.sh build-ts all:eslint")) // eslint depends on build-ts
 	pipeline.AddStep(":lipstick: :lint-roller: :stylelint: :graphql:",
 		bk.Cmd("dev/ci/yarn-run.sh prettier-check all:stylelint graphql-lint"))
