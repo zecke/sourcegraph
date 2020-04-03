@@ -285,35 +285,41 @@ func TestQueryToZoektFileOnlyQueries(t *testing.T) {
 }
 
 func TestSearchFilesInRepos(t *testing.T) {
-	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 		repoName := repo.Name
 		switch repoName {
 		case "foo/one":
-			return []*FileMatchResolver{
-				{
-					uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+			return &SearcherResponse{
+				Matches: []*FileMatchResolver{
+					{
+						uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+					},
 				},
-			}, false, nil
+				LimitHit: false,
+			}, nil
 		case "foo/two":
-			return []*FileMatchResolver{
-				{
-					uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+			return &SearcherResponse{
+				Matches: []*FileMatchResolver{
+					{
+						uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+					},
 				},
-			}, false, nil
+				LimitHit: false,
+			}, nil
 		case "foo/empty":
-			return nil, false, nil
+			return nil, nil
 		case "foo/cloning":
-			return nil, false, &vcs.RepoNotExistError{Repo: repoName, CloneInProgress: true}
+			return nil, &vcs.RepoNotExistError{Repo: repoName, CloneInProgress: true}
 		case "foo/missing":
-			return nil, false, &vcs.RepoNotExistError{Repo: repoName}
+			return nil, &vcs.RepoNotExistError{Repo: repoName}
 		case "foo/missing-db":
-			return nil, false, &errcode.Mock{Message: "repo not found: foo/missing-db", IsNotFound: true}
+			return nil, &errcode.Mock{Message: "repo not found: foo/missing-db", IsNotFound: true}
 		case "foo/timedout":
-			return nil, false, context.DeadlineExceeded
+			return nil, context.DeadlineExceeded
 		case "foo/no-rev":
-			return nil, false, &gitserver.RevisionNotFoundError{Repo: repoName, Spec: "missing"}
+			return nil, &gitserver.RevisionNotFoundError{Repo: repoName, Spec: "missing"}
 		default:
-			return nil, false, errors.New("Unexpected repo")
+			return nil, errors.New("Unexpected repo")
 		}
 	}
 	defer func() { mockSearchFilesInRepo = nil }()
@@ -372,15 +378,18 @@ func TestSearchFilesInRepos(t *testing.T) {
 }
 
 func TestSearchFilesInRepos_multipleRevsPerRepo(t *testing.T) {
-	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 		repoName := repo.Name
 		switch repoName {
 		case "foo":
-			return []*FileMatchResolver{
-				{
-					uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+			return &SearcherResponse{
+				Matches: []*FileMatchResolver{
+					{
+						uri: "git://" + string(repoName) + "?" + rev + "#" + "main.go",
+					},
 				},
-			}, false, nil
+				LimitHit: false,
+			}, nil
 		default:
 			panic("unexpected repo")
 		}
@@ -435,19 +444,22 @@ func TestSearchFilesInRepos_multipleRevsPerRepo(t *testing.T) {
 }
 
 func TestRepoShouldBeSearched(t *testing.T) {
-	mockTextSearch = func(ctx context.Context, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+	mockTextSearch = func(ctx context.Context, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 		repoName := repo.Name
 		switch repoName {
 		case "foo/one":
-			return []*FileMatchResolver{
-				{
-					uri: "git://" + string(repoName) + "?1a2b3c#" + "main.go",
+			return &SearcherResponse{
+				Matches: []*FileMatchResolver{
+					{
+						uri: "git://" + string(repoName) + "?1a2b3c#" + "main.go",
+					},
 				},
-			}, false, nil
+				LimitHit: false,
+			}, nil
 		case "foo/no-filematch":
-			return []*FileMatchResolver{}, false, nil
+			return &SearcherResponse{Matches: []*FileMatchResolver{}}, nil
 		default:
-			return nil, false, errors.New("Unexpected repo")
+			return nil, errors.New("Unexpected repo")
 		}
 	}
 	defer func() { mockTextSearch = nil }()

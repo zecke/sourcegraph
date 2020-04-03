@@ -1080,15 +1080,21 @@ func TestStructuralSearchRepoFilter(t *testing.T) {
 	}
 	defer func() { db.Mocks = db.MockStores{} }()
 
-	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+	mockSearchFilesInRepo = func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 		repoName := repo.Name
 		switch repoName {
 		case "indexed/one":
-			return []*FileMatchResolver{{JPath: indexedFileName}}, false, nil
+			return &SearcherResponse{
+				Matches:  []*FileMatchResolver{{JPath: indexedFileName}},
+				LimitHit: false,
+			}, nil
 		case "unindexed/one":
-			return []*FileMatchResolver{{JPath: "unindexed.go"}}, false, nil
+			return &SearcherResponse{
+				Matches:  []*FileMatchResolver{{JPath: "unindexed.go"}},
+				LimitHit: false,
+			}, nil
 		default:
-			return nil, false, errors.New("Unexpected repo")
+			return nil, errors.New("Unexpected repo")
 		}
 	}
 	defer func() { mockSearchFilesInRepo = nil }()

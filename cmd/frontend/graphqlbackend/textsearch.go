@@ -182,11 +182,18 @@ func (lm *lineMatch) LimitHit() bool {
 	return lm.JLimitHit
 }
 
-var mockTextSearch func(ctx context.Context, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error)
+// SearcherResponse defines the members returned by the searcher service.
+type SearcherResponse struct {
+	Matches     []*FileMatchResolver
+	LimitHit    bool
+	DeadlineHit bool
+}
+
+var mockTextSearch func(ctx context.Context, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error)
 
 // textSearch searches repo@commit with p.
 // Note: the returned matches do not set fileMatch.uri
-func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.Repo, commit api.CommitID, p *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 	if mockTextSearch != nil {
 		return mockTextSearch(ctx, repo, commit, p, fetchTimeout)
 	}
@@ -211,7 +218,7 @@ func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.
 	if deadline, ok := ctx.Deadline(); ok {
 		t, err := deadline.MarshalText()
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		q.Set("Deadline", string(t))
 	}
@@ -257,7 +264,7 @@ func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.
 
 		searcherURL, err := searcherURLs.Get(consistentHashKey, excludedSearchURLs)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 
 		// Fallback to a bad host if nothing is left
@@ -265,28 +272,25 @@ func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.
 			tr.LazyPrintf("failed to find endpoint, trying again without excludes")
 			searcherURL, err = searcherURLs.Get(consistentHashKey, nil)
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
 		}
 
 		url := searcherURL + "?" + rawQuery
 		tr.LazyPrintf("attempt %d: %s", attempt, url)
-		matches, limitHit, err = textSearchURL(ctx, url)
-		// Useful trace for debugging:
-		//
-		// tr.LazyPrintf("%d matches, limitHit=%v, err=%v, ctx.Err()=%v", len(matches), limitHit, err, ctx.Err())
+		response, err = textSearchURL(ctx, url)
 		if err == nil || errcode.IsTimeout(err) {
-			return matches, limitHit, err
+			return response, err
 		}
 
 		// If we are canceled, return that error.
 		if err := ctx.Err(); err != nil {
-			return nil, false, err
+			return nil, err
 		}
 
 		// If not temporary or our last attempt then don't try again.
 		if !errcode.IsTemporary(err) || attempt == maxAttempts {
-			return nil, false, err
+			return nil, err
 		}
 
 		tr.LazyPrintf("transient error %s", err.Error())
@@ -295,10 +299,10 @@ func textSearch(ctx context.Context, searcherURLs *endpoint.Map, repo gitserver.
 	}
 }
 
-func textSearchURL(ctx context.Context, url string) ([]*FileMatchResolver, bool, error) {
+func textSearchURL(ctx context.Context, url string) (*SearcherResponse, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	req = req.WithContext(ctx)
 
@@ -317,30 +321,26 @@ func textSearchURL(ctx context.Context, url string) ([]*FileMatchResolver, bool,
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		return nil, false, errors.Wrap(err, "searcher request failed")
+		return nil, errors.Wrap(err, "searcher request failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
-		return nil, false, errors.WithStack(&searcherError{StatusCode: resp.StatusCode, Message: string(body)})
+		return nil, errors.WithStack(&searcherError{StatusCode: resp.StatusCode, Message: string(body)})
 	}
 
-	r := struct {
-		Matches     []*FileMatchResolver
-		LimitHit    bool
-		DeadlineHit bool
-	}{}
+	r := &SearcherResponse{}
 	err = json.NewDecoder(resp.Body).Decode(&r)
 	if err != nil {
-		return nil, false, errors.Wrap(err, "searcher response invalid")
+		return nil, errors.Wrap(err, "searcher response invalid")
 	}
 	if r.DeadlineHit {
 		err = context.DeadlineExceeded
 	}
-	return r.Matches, r.LimitHit, err
+	return r, err
 }
 
 type searcherError struct {
@@ -360,9 +360,9 @@ func (e *searcherError) Error() string {
 	return e.Message
 }
 
-var mockSearchFilesInRepo func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error)
+var mockSearchFilesInRepo func(ctx context.Context, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error)
 
-func searchFilesInRepo(ctx context.Context, searcherURLs *endpoint.Map, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (matches []*FileMatchResolver, limitHit bool, err error) {
+func searchFilesInRepo(ctx context.Context, searcherURLs *endpoint.Map, repo *types.Repo, gitserverRepo gitserver.Repo, rev string, info *search.TextPatternInfo, fetchTimeout time.Duration) (response *SearcherResponse, err error) {
 	if mockSearchFilesInRepo != nil {
 		return mockSearchFilesInRepo(ctx, repo, gitserverRepo, rev, info, fetchTimeout)
 	}
@@ -373,28 +373,31 @@ func searchFilesInRepo(ctx context.Context, searcherURLs *endpoint.Map, repo *ty
 	// repo is not on gitserver.
 	commit, err := git.ResolveRevision(ctx, gitserverRepo, nil, rev, &git.ResolveRevisionOptions{NoEnsureRevision: true})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	shouldBeSearched, err := repoShouldBeSearched(ctx, searcherURLs, info, gitserverRepo, commit, fetchTimeout)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if !shouldBeSearched {
-		return matches, false, err
+		return nil, err
 	}
 
-	matches, limitHit, err = textSearch(ctx, searcherURLs, gitserverRepo, commit, info, fetchTimeout)
+	response, err = textSearch(ctx, searcherURLs, gitserverRepo, commit, info, fetchTimeout)
+	if err != nil || response == nil {
+		return nil, err
+	}
 
 	workspace := fileMatchURI(repo.Name, rev, "")
-	for _, fm := range matches {
+	for _, fm := range response.Matches {
 		fm.uri = workspace + fm.JPath
 		fm.Repo = repo
 		fm.CommitID = commit
 		fm.InputRev = &rev
 	}
 
-	return matches, limitHit, err
+	return response, err
 }
 
 // repoShouldBeSearched determines whether a repository should be searched in, based on whether the repository
@@ -423,11 +426,11 @@ func repoShouldBeSearched(ctx context.Context, searcherURLs *endpoint.Map, searc
 func repoHasFilesWithNamesMatching(ctx context.Context, searcherURLs *endpoint.Map, include bool, repoHasFileFlag []string, gitserverRepo gitserver.Repo, commit api.CommitID, fetchTimeout time.Duration) (bool, error) {
 	for _, pattern := range repoHasFileFlag {
 		p := search.TextPatternInfo{IsRegExp: true, FileMatchLimit: 1, IncludePatterns: []string{pattern}, PathPatternsAreRegExps: true, PathPatternsAreCaseSensitive: false, PatternMatchesContent: true, PatternMatchesPath: true}
-		matches, _, err := textSearch(ctx, searcherURLs, gitserverRepo, commit, &p, fetchTimeout)
+		response, err := textSearch(ctx, searcherURLs, gitserverRepo, commit, &p, fetchTimeout)
 		if err != nil {
 			return false, err
 		}
-		if include && len(matches) == 0 || !include && len(matches) > 0 {
+		if include && response != nil && len(response.Matches) == 0 || !include && response != nil && len(response.Matches) > 0 {
 			// repo shouldn't be searched if it does not have matches for the patterns in `repohasfile`
 			// or if it has file matches for the patterns in `-repohasfile`.
 			return false, nil
@@ -649,7 +652,7 @@ func searchFilesInRepos(ctx context.Context, args *search.TextParameters) (res [
 					defer wg.Done()
 					defer done()
 
-					matches, repoLimitHit, err := searchFilesInRepo(ctx, args.SearcherURLs, repoRev.Repo, repoRev.GitserverRepo(), repoRev.RevSpecs()[0], args.PatternInfo, fetchTimeout)
+					response, err := searchFilesInRepo(ctx, args.SearcherURLs, repoRev.Repo, repoRev.GitserverRepo(), repoRev.RevSpecs()[0], args.PatternInfo, fetchTimeout)
 					if err != nil {
 						tr.LogFields(otlog.String("repo", string(repoRev.Repo.Name)), otlog.Error(err), otlog.Bool("timeout", errcode.IsTimeout(err)), otlog.Bool("temporary", errcode.IsTemporary(err)))
 						log15.Warn("searchFilesInRepo failed", "error", err, "repo", repoRev.Repo.Name)
@@ -659,12 +662,16 @@ func searchFilesInRepos(ctx context.Context, args *search.TextParameters) (res [
 					if ctx.Err() == nil {
 						common.searched = append(common.searched, repoRev.Repo)
 					}
-					if repoLimitHit {
+					var limitHit bool
+					if response != nil {
+						limitHit = response.LimitHit
+					}
+					if limitHit {
 						// We did not return all results in this repository.
 						common.partial[repoRev.Repo.Name] = struct{}{}
 					}
 					// non-diff search reports timeout through err, so pass false for timedOut
-					if fatalErr := handleRepoSearchResult(common, repoRev, repoLimitHit, false, err); fatalErr != nil {
+					if fatalErr := handleRepoSearchResult(common, repoRev, limitHit, false, err); fatalErr != nil {
 						if ctx.Err() == context.Canceled {
 							// Our request has been canceled (either because another one of searcherRepos
 							// had a fatal error, or otherwise), so we can just ignore these results. We
@@ -679,7 +686,9 @@ func searchFilesInRepos(ctx context.Context, args *search.TextParameters) (res [
 							cancel()
 						}
 					}
-					addMatches(matches)
+					if response != nil {
+						addMatches(response.Matches)
+					}
 				}(limitCtx, limitDone) // ends the Go routine for a call to searcher for a repo
 			} // ends the for loop iterating over repo's revs
 		} // ends the for loop iterating over repos
