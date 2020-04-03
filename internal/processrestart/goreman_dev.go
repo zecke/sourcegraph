@@ -37,6 +37,7 @@ func restartGoremanDev() error {
 		"syntect_server",
 		"zoekt-indexserver",
 		"zoekt-webserver",
+		"precise-code-intel-bundle-manager",
 		// frontend is restarted separately last
 	}
 
