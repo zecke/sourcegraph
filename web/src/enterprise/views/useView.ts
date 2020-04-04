@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { Observable, combineLatest } from 'rxjs'
 import { Contributions, ViewContribution, FormContribution, Evaluated } from '../../../../shared/src/api/protocol'
-import { useObservable } from '../../util/useObservable'
+import { useObservable } from '../../../../shared/src/util/useObservable'
 import { map, tap } from 'rxjs/operators'
 import {
     PanelViewWithComponent,
