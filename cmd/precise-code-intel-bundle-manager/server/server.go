@@ -21,63 +21,53 @@ type Server struct {
 
 func (s *Server) Handler() http.Handler {
 	mux := mux.NewRouter()
-	mux.HandleFunc("/uploads/{id:[0-9]+}", s.handleUpload)
-	mux.HandleFunc("/dbs/{id:[0-9]+}", s.handleDatabase)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/exists", s.handleExists)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/definitions", s.handleDefinitions)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/references", s.handleReferences)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/hover", s.handleHover)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/monikersByPosition", s.handleMonikerByPosition)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/monikerResults", s.handleMonikerResults)
-	mux.HandleFunc("/dbs/{id:[0-9]+}/packageInformation", s.handlePackageInformation)
+	mux.Path("/uploads/{id:[0-9]+}").Methods("GET").HandlerFunc(s.handleGetUpload)
+	mux.Path("/uploads/{id:[0-9]+}").Methods("POST").HandlerFunc(s.handlePostUpload)
+	mux.Path("/dbs/{id:[0-9]+}").Methods("POST").HandlerFunc(s.handlePostDatabase)
+	mux.Path("/dbs/{id:[0-9]+}/exists").Methods("GET").HandlerFunc(s.handleExists)
+	mux.Path("/dbs/{id:[0-9]+}/definitions").Methods("GET").HandlerFunc(s.handleDefinitions)
+	mux.Path("/dbs/{id:[0-9]+}/references").Methods("GET").HandlerFunc(s.handleReferences)
+	mux.Path("/dbs/{id:[0-9]+}/hover").Methods("GET").HandlerFunc(s.handleHover)
+	mux.Path("/dbs/{id:[0-9]+}/monikersByPosition").Methods("GET").HandlerFunc(s.handleMonikerByPosition)
+	mux.Path("/dbs/{id:[0-9]+}/monikerResults").Methods("GET").HandlerFunc(s.handleMonikerResults)
+	mux.Path("/dbs/{id:[0-9]+}/packageInformation").Methods("GET").HandlerFunc(s.handlePackageInformation)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	return mux
 }
 
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "GET" {
-		file, err := os.Open(s.uploadFilename(idFromRequest(r)))
-		if err != nil {
-			http.Error(w, "Upload not found.", http.StatusNotFound)
-			return
-		}
-		defer file.Close()
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = io.Copy(w, file)
+func (s *Server) handleGetUpload(w http.ResponseWriter, r *http.Request) {
+	file, err := os.Open(s.uploadFilename(idFromRequest(r)))
+	if err != nil {
+		http.Error(w, "Upload not found.", http.StatusNotFound)
 		return
 	}
+	defer file.Close()
 
-	if r.Method == "POST" {
-		s.doUpload(w, r, s.uploadFilename(idFromRequest(r)))
-		return
-	}
-
-	w.WriteHeader(http.StatusMethodNotAllowed)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, file)
 }
 
-func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	s.doUpload(w, r, s.dbFilename(idFromRequest(r)))
+func (s *Server) handlePostUpload(w http.ResponseWriter, r *http.Request) {
+	s.doUpload(w, r, s.uploadFilename)
 }
 
-func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, filename string) {
+func (s *Server) handlePostDatabase(w http.ResponseWriter, r *http.Request) {
+	s.doUpload(w, r, s.dbFilename)
+}
+
+func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename func(id int64) string) {
 	defer r.Body.Close()
 
-	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0666)
+	targetFile, err := os.OpenFile(makeFilename(idFromRequest(r)), os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
 
-	_, _ = io.Copy(targetFile, r.Body)
 	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(targetFile, r.Body)
 }
 
 func (s *Server) withDatabase(w http.ResponseWriter, r *http.Request, handler func(db *Database) error) {
@@ -95,12 +85,8 @@ func (s *Server) withDatabase(w http.ResponseWriter, r *http.Request, handler fu
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	path := r.URL.Query().Get("path")
+	q := r.URL.Query()
+	path := q.Get("path")
 
 	s.withDatabase(w, r, func(db *Database) error {
 		exists, err := db.Exists(path)
@@ -114,11 +100,6 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	path := q.Get("path")
 	line, _ := strconv.Atoi(q.Get("line"))
@@ -135,11 +116,6 @@ func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	path := q.Get("path")
 	line, _ := strconv.Atoi(q.Get("line"))
@@ -156,11 +132,6 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	path := q.Get("path")
 	line, _ := strconv.Atoi(q.Get("line"))
@@ -190,11 +161,6 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	path := q.Get("path")
 	line, _ := strconv.Atoi(q.Get("line"))
@@ -211,31 +177,24 @@ func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	modelType := q.Get("modelType")
 	scheme := q.Get("scheme")
 	identifier := q.Get("identifier")
-
-	skip, err1 := strconv.Atoi(q.Get("skip"))
-	if err1 != nil {
-		skip = 0
-	}
-
-	take, err2 := strconv.Atoi(q.Get("take"))
-	if err2 != nil {
+	skip, _ := strconv.Atoi(q.Get("skip"))
+	take, err := strconv.Atoi(q.Get("take"))
+	if err != nil {
 		take = 100
 	}
 
 	var tableName string
 	if modelType == "definition" {
 		tableName = "definitions"
-	} else {
+	} else if modelType == "reference" {
 		tableName = "references"
+	} else {
+		http.Error(w, "", http.StatusBadRequest)
+		return
 	}
 
 	s.withDatabase(w, r, func(db *Database) error {
@@ -257,11 +216,6 @@ func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	q := r.URL.Query()
 	path := q.Get("path")
 	packageInformationID := ID(q.Get("packageInformationId"))
