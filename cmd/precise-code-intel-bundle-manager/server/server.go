@@ -16,6 +16,9 @@ type Server struct {
 	StorageDir string
 }
 
+// TODO
+// github.com/golang/groupcache/lru
+
 func (s *Server) Handler() http.Handler {
 	mux := mux.NewRouter()
 	mux.HandleFunc("/uploads/{id:[0-9]+}", s.handleUpload)
@@ -77,6 +80,20 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, filename strin
 	w.WriteHeader(http.StatusOK)
 }
 
+func (s *Server) withDatabase(w http.ResponseWriter, r *http.Request, handler func(db *Database) error) {
+	db, err := OpenDatabase(s.dbFilename(idFromRequest(r)))
+	if err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	if err := handler(db); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+}
+
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -85,17 +102,15 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 
 	path := r.URL.Query().Get("path")
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	exists, err := db.Exists(path)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		exists, err := db.Exists(path)
+		if err != nil {
+			return err
+		}
 
-	if err := json.NewEncoder(w).Encode(exists); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(exists)
+	})
+
 }
 
 func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
@@ -109,17 +124,14 @@ func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	locations, err := db.Definitions(path, line, character)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		locations, err := db.Definitions(path, line, character)
+		if err != nil {
+			return err
+		}
 
-	if err := json.NewEncoder(w).Encode(locations); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(locations)
+	})
 }
 
 func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
@@ -133,17 +145,14 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	locations, err := db.References(path, line, character)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		locations, err := db.References(path, line, character)
+		if err != nil {
+			return err
+		}
 
-	if err := json.NewEncoder(w).Encode(locations); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(locations)
+	})
 }
 
 func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
@@ -157,30 +166,27 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	text, hoverRange, exists, err := db.Hover(path, line, character)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-
-	var resp interface{}
-	if exists {
-		resp = struct {
-			Text  string `json:"text"`
-			Range Range  `json:"range"`
-		}{
-			Text:  text,
-			Range: hoverRange,
+	s.withDatabase(w, r, func(db *Database) error {
+		text, hoverRange, exists, err := db.Hover(path, line, character)
+		if err != nil {
+			return err
 		}
-	} else {
-		resp = nil
-	}
 
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		var resp interface{}
+		if exists {
+			resp = struct {
+				Text  string `json:"text"`
+				Range Range  `json:"range"`
+			}{
+				Text:  text,
+				Range: hoverRange,
+			}
+		} else {
+			resp = nil
+		}
+
+		return json.NewEncoder(w).Encode(resp)
+	})
 }
 
 func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request) {
@@ -194,17 +200,14 @@ func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request)
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	monikerData, err := db.MonikerByPosition(path, line, character)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		monikerData, err := db.MonikerByPosition(path, line, character)
+		if err != nil {
+			return err
+		}
 
-	if err := json.NewEncoder(w).Encode(monikerData); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(monikerData)
+	})
 }
 
 func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
@@ -235,25 +238,22 @@ func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
 		tableName = "references"
 	}
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	locations, count, err := db.MonikerResults(tableName, scheme, identifier, skip, take)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		locations, count, err := db.MonikerResults(tableName, scheme, identifier, skip, take)
+		if err != nil {
+			return err
+		}
 
-	resp := struct {
-		Locations []InternalLocation `json:"locations"`
-		Count     int                `json:"count"`
-	}{
-		Locations: locations,
-		Count:     count,
-	}
+		resp := struct {
+			Locations []InternalLocation `json:"locations"`
+			Count     int                `json:"count"`
+		}{
+			Locations: locations,
+			Count:     count,
+		}
 
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(resp)
+	})
 }
 
 func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request) {
@@ -266,24 +266,21 @@ func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request
 	path := q.Get("path")
 	packageInformationID := ID(q.Get("packageInformationId"))
 
-	db := NewDatabase(s.dbFilename(idFromRequest(r)))
-	packageInformationData, exists, err := db.PackageInformation(path, packageInformationID)
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
+	s.withDatabase(w, r, func(db *Database) error {
+		packageInformationData, exists, err := db.PackageInformation(path, packageInformationID)
+		if err != nil {
+			return err
+		}
 
-	var resp interface{}
-	if exists {
-		resp = packageInformationData
-	} else {
-		resp = nil
-	}
+		var resp interface{}
+		if exists {
+			resp = packageInformationData
+		} else {
+			resp = nil
+		}
 
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+		return json.NewEncoder(w).Encode(resp)
+	})
 }
 
 func (s *Server) uploadFilename(id int64) string {
