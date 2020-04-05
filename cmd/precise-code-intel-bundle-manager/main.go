@@ -46,6 +46,8 @@ func main() {
 	env.HandleHelpFlag()
 	tracer.Init()
 
+	MustRegisterSqlite3WithPcre()
+
 	if storageDir == "" {
 		log.Fatal("precise-code-intel-bundle-manager: LSIF_STORAGE_ROOT is required")
 	}

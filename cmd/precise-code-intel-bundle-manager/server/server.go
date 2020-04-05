@@ -16,8 +16,6 @@ type Server struct {
 	StorageDir string
 }
 
-const UploadLimit = 32 << 20
-
 func (s *Server) Handler() http.Handler {
 	mux := mux.NewRouter()
 	mux.HandleFunc("/uploads/{id:[0-9]+}", s.handleUpload)
@@ -67,17 +65,7 @@ func (s *Server) handleDatabase(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, filename string) {
-	if err := r.ParseMultipartForm(UploadLimit); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-
-	sourceFile, _, err := r.FormFile("file")
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-	defer sourceFile.Close()
+	defer r.Body.Close()
 
 	targetFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
@@ -85,7 +73,7 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, filename strin
 		return
 	}
 
-	_, _ = io.Copy(targetFile, sourceFile)
+	_, _ = io.Copy(targetFile, r.Body)
 	w.WriteHeader(http.StatusOK)
 }
 
