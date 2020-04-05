@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"log"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/inconshreveable/log15"
+	"github.com/mattn/go-sqlite3"
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-bundle-manager/server"
 	"github.com/sourcegraph/sourcegraph/internal/debugserver"
 	"github.com/sourcegraph/sourcegraph/internal/env"
@@ -20,6 +22,24 @@ import (
 var (
 	storageDir = env.Get("LSIF_STORAGE_ROOT", "/lsif-storage", "Root dir containing uploads and converted bundles.")
 )
+
+//
+// GUARDED
+
+var libSqlite3Pcre = env.Get("LIBSQLITE3_PCRE", "", "path to the libsqlite3-pcre library")
+
+// MustRegisterSqlite3WithPcre registers a sqlite3 driver with PCRE support and
+// panics if it can't.
+func MustRegisterSqlite3WithPcre() {
+	if libSqlite3Pcre == "" {
+		env.PrintHelp()
+		log.Fatal("can't find the libsqlite3-pcre library because LIBSQLITE3_PCRE was not set")
+	}
+	sql.Register("sqlite3_with_pcre", &sqlite3.SQLiteDriver{Extensions: []string{libSqlite3Pcre}})
+}
+
+// END GUARDED
+//
 
 func main() {
 	env.Lock()
