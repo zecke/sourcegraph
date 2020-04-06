@@ -48,7 +48,7 @@ func TestFindRanges(t *testing.T) {
 		actual := findRanges(m, i, 4)
 		expected := []RangeData{r}
 		if !reflect.DeepEqual(actual, expected) {
-			t.Errorf("unexpected result. want=%v have=%v", expected, actual)
+			t.Errorf("unexpected findRanges result %d. want=%v have=%v", i, expected, actual)
 		}
 	}
 }
@@ -95,7 +95,7 @@ func TestFindRangesOrder(t *testing.T) {
 	actual := findRanges(m, 2, 4)
 	expected := []RangeData{ranges[2], ranges[1], ranges[0]}
 	if !reflect.DeepEqual(actual, expected) {
-		t.Errorf("unexpected result. want=%v have=%v", expected, actual)
+		t.Errorf("unexpected findRanges result. want=%v have=%v", expected, actual)
 	}
 
 }
@@ -124,7 +124,7 @@ func TestComparePosition(t *testing.T) {
 
 	for _, testCase := range testCases {
 		if cmp := comparePosition(left, testCase.line, testCase.character); cmp != testCase.expected {
-			t.Errorf("unexpected comparison %d:%d. want=%d have=%d", testCase.line, testCase.character, testCase.expected, cmp)
+			t.Errorf("unexpected comparisonPosition result for %d:%d. want=%d have=%d", testCase.line, testCase.character, testCase.expected, cmp)
 		}
 	}
 }
