@@ -130,7 +130,7 @@ func (db *Database) Hover(path string, line, character int) (string, Range, bool
 	return "", Range{}, false, nil
 }
 
-func (db *Database) MonikerByPosition(path string, line, character int) ([][]MonikerData, error) {
+func (db *Database) MonikersByPosition(path string, line, character int) ([][]MonikerData, error) {
 	documentData, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
 		return nil, err
@@ -159,7 +159,7 @@ func (db *Database) MonikerByPosition(path string, line, character int) ([][]Mon
 }
 
 func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, take int) ([]InternalLocation, int, error) {
-	query := sqlf.Sprintf("SELECT * FROM %s WHERE scheme = :scheme AND identifier := identifier LIMIT %s OFFSET %s", tableName, scheme, identifier, take, skip)
+	query := sqlf.Sprintf("SELECT * FROM '"+tableName+"' WHERE scheme = %s AND identifier = %s LIMIT %s OFFSET %s", scheme, identifier, take, skip)
 
 	var rows []struct {
 		ID             int    `db:"id"`
@@ -172,7 +172,7 @@ func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, t
 		EndCharacter   int    `db:"endCharacter"`
 	}
 
-	if err := db.db.Select(&rows, query.Query(sqlf.PostgresBindVar), query.Args()); err != nil {
+	if err := db.db.Select(&rows, query.Query(sqlf.PostgresBindVar), query.Args()...); err != nil {
 		return nil, 0, err
 	}
 
@@ -184,10 +184,10 @@ func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, t
 		})
 	}
 
-	countQuery := sqlf.Sprintf("SELECT COUNT(1) FROM %s WHERE scheme = :scheme AND identifier := identifier", tableName, scheme, identifier)
+	countQuery := sqlf.Sprintf("SELECT COUNT(1) FROM '"+tableName+"' WHERE scheme = %s AND identifier = %s", scheme, identifier)
 
 	var totalCount int
-	if err := db.db.Get(&totalCount, countQuery.Query(sqlf.PostgresBindVar), countQuery.Args()); err != nil {
+	if err := db.db.Get(&totalCount, countQuery.Query(sqlf.PostgresBindVar), countQuery.Args()...); err != nil {
 		return nil, 0, err
 	}
 

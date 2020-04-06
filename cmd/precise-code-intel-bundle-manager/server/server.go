@@ -82,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Path("/dbs/{id:[0-9]+}/definitions").Methods("GET").HandlerFunc(s.handleDefinitions)
 	mux.Path("/dbs/{id:[0-9]+}/references").Methods("GET").HandlerFunc(s.handleReferences)
 	mux.Path("/dbs/{id:[0-9]+}/hover").Methods("GET").HandlerFunc(s.handleHover)
-	mux.Path("/dbs/{id:[0-9]+}/monikersByPosition").Methods("GET").HandlerFunc(s.handleMonikerByPosition)
+	mux.Path("/dbs/{id:[0-9]+}/monikersByPosition").Methods("GET").HandlerFunc(s.handleMonikersByPosition)
 	mux.Path("/dbs/{id:[0-9]+}/monikerResults").Methods("GET").HandlerFunc(s.handleMonikerResults)
 	mux.Path("/dbs/{id:[0-9]+}/packageInformation").Methods("GET").HandlerFunc(s.handlePackageInformation)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -211,14 +211,14 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleMonikersByPosition(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	path := q.Get("path")
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
 	if err := s.withDatabase(r, func(db *Database) error {
-		monikerData, err := db.MonikerByPosition(path, line, character)
+		monikerData, err := db.MonikersByPosition(path, line, character)
 		if err != nil {
 			return err
 		}
