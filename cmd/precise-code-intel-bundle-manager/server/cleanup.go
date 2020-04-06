@@ -99,7 +99,12 @@ func (s *Server) removeDeadDumps() error {
 
 	allStates := map[int]string{}
 	for len(ids) > 0 {
-		states, err := client.DefaultClient.States(context.Background(), ids[:deadDumpBatchSize])
+		batchSize := int(deadDumpBatchSize)
+		if len(ids) < batchSize {
+			batchSize = len(ids)
+		}
+
+		states, err := client.DefaultClient.States(context.Background(), ids[:batchSize])
 		if err != nil {
 			return err
 		}
