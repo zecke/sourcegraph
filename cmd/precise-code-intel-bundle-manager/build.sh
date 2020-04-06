@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# This script builds the precise-code-intel-bundle-manager docker image.
+
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 set -eux
 
@@ -13,19 +15,15 @@ trap cleanup EXIT
 export GO111MODULE=on
 export GOARCH=amd64
 export GOOS=linux
-export CGO_ENABLED=0
+export OUTPUT # build artifact goes here
+./cmd/precise-code-intel-bundle-manager/go-build.sh
 
-cp -a ./cmd/precise-code-intel "$OUTPUT"
-
-echo "--- go build"
-go build \
-    -trimpath \
-    -ldflags "-X github.com/sourcegraph/sourcegraph/internal/version.version=$VERSION"  \
-    -o "$OUTPUT/precise-code-intel-bundle-manager" github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-bundle-manager
+cp -a ./dev/libsqlite3-pcre/install-alpine.sh "$OUTPUT/libsqlite3-pcre-install-alpine.sh"
 
 echo "--- docker build"
 docker build -f cmd/precise-code-intel-bundle-manager/Dockerfile -t "$IMAGE" "$OUTPUT" \
     --progress=plain \
+    ${DOCKER_BUILD_FLAGS:-} \
     --build-arg COMMIT_SHA \
     --build-arg DATE \
     --build-arg VERSION

@@ -1,26 +1,24 @@
 package server
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"fmt"
+	"context"
 	"io/ioutil"
-	"net/http"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/sourcegraph/sourcegraph/internal/endpoint"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/lsifserver/client"
 	"github.com/sourcegraph/sourcegraph/internal/env"
-	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 )
 
-const FailedUploadMaxAge = time.Minute * 20      // TODO - configure
-const MaximumSizeBytes = 10 * 1024 * 1024 * 1024 // TODO - configure
+var (
+	DirSizeMB          = env.Get("DBS_DIR_MAXIMUM_SIZE_MB", "10000", "maximum space that the dbs directory can use in megabytes")
+	FailedUploadMaxAge = env.Get("FAILED_UPLOAD_MAX_AGE", "86400", "maximum age that the files for an unprocessed upload can remain on disk in seconds")
+	DeadDumpBatchSize  = env.Get("DEAD_DUMP_BATCH_SIZE", "100", "how many uploads to query at once when determining if a db file is unreferenced")
+)
 
 func (s *Server) Janitor() error {
 	for _, task := range []func() error{s.removeDeadDumps, s.cleanOldDumps, s.cleanFailedUploads} {
@@ -33,13 +31,20 @@ func (s *Server) Janitor() error {
 }
 
 func (s *Server) cleanOldDumps() error {
+	var maxDirSizeBytes int64
+	if i, err := strconv.ParseInt(DirSizeMB, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for DBS_DIR_MAXIMUM_SIZE_MB: %s", DirSizeMB, err)
+	} else {
+		maxDirSizeBytes = i * 1000 * 1000
+	}
+
 	dirSizeBytes, err := dirSize(filepath.Join(s.storageDir, "dbs"))
 	if err != nil {
 		return err
 	}
 
-	for dirSizeBytes > MaximumSizeBytes {
-		id, prunable, err := DefaultClient.Prune()
+	for dirSizeBytes > maxDirSizeBytes {
+		id, prunable, err := client.DefaultClient.Prune(context.Background())
 		if err != nil {
 			return err
 		}
@@ -65,6 +70,13 @@ func (s *Server) cleanOldDumps() error {
 }
 
 func (s *Server) removeDeadDumps() error {
+	var deadDumpBatchSize int64
+	if i, err := strconv.ParseInt(DeadDumpBatchSize, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for DEAD_DUMP_BATCH_SIZE: %s", DeadDumpBatchSize, err)
+	} else {
+		deadDumpBatchSize = i
+	}
+
 	fileInfos, err := ioutil.ReadDir(filepath.Join(s.storageDir, "dbs"))
 	if err != nil {
 		return err
@@ -80,20 +92,26 @@ func (s *Server) removeDeadDumps() error {
 		pathsByID[id] = filepath.Join(s.storageDir, "dbs", fileInfo.Name())
 	}
 
-	// TODO - request in max-sized chunks
-
 	var ids []int
 	for id := range pathsByID {
 		ids = append(ids, id)
 	}
 
-	states, err := DefaultClient.States(ids)
-	if err != nil {
-		return err
+	allStates := map[int]string{}
+	for len(ids) > 0 {
+		states, err := client.DefaultClient.States(context.Background(), ids[:deadDumpBatchSize])
+		if err != nil {
+			return err
+		}
+		for k, v := range states {
+			allStates[k] = v
+		}
+
+		ids = ids[deadDumpBatchSize:]
 	}
 
 	for id, path := range pathsByID {
-		state, exists := states[id]
+		state, exists := allStates[id]
 		if !exists || state == "errored" {
 			if err := os.Remove(path); err != nil {
 				return err
@@ -105,13 +123,20 @@ func (s *Server) removeDeadDumps() error {
 }
 
 func (s *Server) cleanFailedUploads() error {
+	var maxAge time.Duration
+	if i, err := strconv.ParseInt(FailedUploadMaxAge, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for FAILED_UPLOAD_MAX_AGE: %s", FailedUploadMaxAge, err)
+	} else {
+		maxAge = time.Duration(i) * time.Second
+	}
+
 	fileInfos, err := ioutil.ReadDir(filepath.Join(s.storageDir, "uploads"))
 	if err != nil {
 		return err
 	}
 
 	for _, fileInfo := range fileInfos {
-		if time.Since(fileInfo.ModTime()) < FailedUploadMaxAge {
+		if time.Since(fileInfo.ModTime()) < maxAge {
 			continue
 		}
 
@@ -146,119 +171,4 @@ func dirSize(path string) (int64, error) {
 	}
 
 	return size, nil
-}
-
-//
-// TODO - make one unified client
-//
-
-var (
-	preciseCodeIntelAPIServerURL = env.Get("PRECISE_CODE_INTEL_API_SERVER_URL", "k8s+http://precise-code-intel:3186", "precise-code-intel-api-server URL (or space separated list of precise-code-intel-api-server URLs)")
-
-	preciseCodeIntelAPIServerURLsOnce sync.Once
-	preciseCodeIntelAPIServerURLs     *endpoint.Map
-
-	DefaultClient = &Client{
-		endpoint: LSIFURLs(),
-		HTTPClient: &http.Client{
-			// ot.Transport will propagate opentracing spans
-			Transport: &ot.Transport{},
-		},
-	}
-)
-
-type Client struct {
-	endpoint   *endpoint.Map
-	HTTPClient *http.Client
-}
-
-func LSIFURLs() *endpoint.Map {
-	preciseCodeIntelAPIServerURLsOnce.Do(func() {
-		if len(strings.Fields(preciseCodeIntelAPIServerURL)) == 0 {
-			preciseCodeIntelAPIServerURLs = endpoint.Empty(errors.New("an precise-code-intel-api-server has not been configured"))
-		} else {
-			preciseCodeIntelAPIServerURLs = endpoint.New(preciseCodeIntelAPIServerURL)
-		}
-	})
-	return preciseCodeIntelAPIServerURLs
-}
-
-func (c *Client) Prune() (int64, bool, error) {
-	serverURL, err := c.endpoint.Get("", nil)
-	if err != nil {
-		return 0, false, err
-	}
-
-	req, err := http.NewRequest("POST", serverURL+"/prune", nil)
-	if err != nil {
-		return 0, false, err
-	}
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return 0, false, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, false, fmt.Errorf("unexpected status code %d", resp.StatusCode)
-	}
-
-	var id *int64
-	if err := json.NewDecoder(resp.Body).Decode(&id); err != nil {
-		return 0, false, err
-	}
-
-	if id == nil {
-		return 0, false, nil
-	}
-
-	return *id, true, nil
-}
-
-func (c *Client) States(ids []int) (map[int]string, error) {
-	serverURL, err := c.endpoint.Get("", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	reqPayload, err := json.Marshal(map[string]interface{}{"ids": ids})
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", serverURL+"/uploads", bytes.NewReader(reqPayload))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Add("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
-	}
-
-	var respPayload wrappedMapValue
-	if err := json.NewDecoder(resp.Body).Decode(&respPayload); err != nil {
-		return nil, err
-	}
-
-	states := map[int]string{}
-	for _, pair := range respPayload.Value {
-		var key int
-		var value string
-		payload := []interface{}{&key, &value}
-		if err := json.Unmarshal([]byte(pair), &payload); err != nil {
-			return nil, err
-		}
-
-		states[key] = value
-	}
-
-	return states, nil
 }

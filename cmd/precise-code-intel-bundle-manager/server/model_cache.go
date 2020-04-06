@@ -6,6 +6,10 @@ import (
 	lru "github.com/hashicorp/golang-lru"
 )
 
+//
+// TODO - cache based on size rather than number of entries
+//
+
 type DocumentDataCache struct{ *simpleCache }
 
 func NewDocumentDataCache(size int) (*DocumentDataCache, error) {

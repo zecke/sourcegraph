@@ -7,8 +7,8 @@ import (
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend"
-	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/lsifserver/client"
 	"github.com/sourcegraph/sourcegraph/internal/api"
+	"github.com/sourcegraph/sourcegraph/internal/codeintel/lsifserver/client"
 	"github.com/sourcegraph/sourcegraph/internal/lsif"
 )
 

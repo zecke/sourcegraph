@@ -1,6 +1,5 @@
 package server
 
-// TODO - need to test this specifically against previous hash values
 func hashKey(id ID, maxIndex int) int {
 	hash := 0
 	for _, c := range string(id) {

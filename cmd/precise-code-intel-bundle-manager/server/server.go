@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/gorilla/mux"
+	"github.com/sourcegraph/sourcegraph/internal/env"
 )
 
 type Server struct {
@@ -19,22 +21,46 @@ type Server struct {
 	resultChunkDataCache *ResultChunkDataCache
 }
 
-const DatabaseCacheSize = 100        // TODO - configure
-const DocumentDataCacheSize = 100    // TODO - configure
-const ResultChunkDataCacheSize = 100 // TODO - configure
+var (
+	DatabaseCacheSize        = env.Get("CONNECTION_CACHE_CAPACITY", "100", "number of SQLite connections that can be opened at once")
+	DocumentDataCacheSize    = env.Get("DOCUMENT_CACHE_CAPACITY", "100", "maximum number of decoded documents that can be held in memory at once")
+	ResultChunkDataCacheSize = env.Get("RESULT_CHUNK_CACHE_CAPACITY", "100", "maximum number of decoded result chunks that can be held in memory at once")
+)
 
 func New(storageDir string) (*Server, error) {
-	databaseCache, err := NewDatabaseCache(DatabaseCacheSize)
+
+	var databaseCacheSize int
+	if i, err := strconv.ParseInt(DatabaseCacheSize, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for CONNECTION_CACHE_CAPACITY: %s", DatabaseCacheSize, err)
+	} else {
+		databaseCacheSize = int(i)
+	}
+
+	databaseCache, err := NewDatabaseCache(databaseCacheSize)
 	if err != nil {
 		return nil, err
 	}
 
-	documentDataCache, err := NewDocumentDataCache(DocumentDataCacheSize)
+	var documentDataCacheSize int
+	if i, err := strconv.ParseInt(DocumentDataCacheSize, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for DOCUMENT_CACHE_CAPACITY: %s", DocumentDataCacheSize, err)
+	} else {
+		documentDataCacheSize = int(i)
+	}
+
+	documentDataCache, err := NewDocumentDataCache(documentDataCacheSize)
 	if err != nil {
 		return nil, err
 	}
 
-	resultChunkDataCache, err := NewResultChunkDataCache(ResultChunkDataCacheSize)
+	var resultChunkDataCacheSize int
+	if i, err := strconv.ParseInt(ResultChunkDataCacheSize, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for RESULT_CHUNK_CACHE_CAPACITY: %s", ResultChunkDataCacheSize, err)
+	} else {
+		resultChunkDataCacheSize = int(i)
+	}
+
+	resultChunkDataCache, err := NewResultChunkDataCache(resultChunkDataCacheSize)
 	if err != nil {
 		return nil, err
 	}

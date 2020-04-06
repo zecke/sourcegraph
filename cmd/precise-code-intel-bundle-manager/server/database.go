@@ -33,7 +33,7 @@ func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultC
 	}
 
 	var numResultChunks int
-	if err := db.Get(&numResultChunks, "SELECT numResultChunks FROM meta WHERE id = 1"); err != nil {
+	if err := db.Get(&numResultChunks, "SELECT numResultChunks FROM meta LIMIT 1"); err != nil {
 		return nil, err
 	}
 
