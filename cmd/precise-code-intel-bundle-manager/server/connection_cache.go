@@ -63,7 +63,7 @@ func onEvict(key interface{}, value interface{}) {
 	entry.once.Do(func() {
 		go func() {
 			entry.wg.Wait()
-			_ = entry.db.Close()
+			_ = entry.db.Close() // TODO - handle error
 		}()
 	})
 }

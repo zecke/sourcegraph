@@ -13,8 +13,7 @@ type Database struct {
 	documentDataCache    *DocumentDataCache
 	resultChunkDataCache *ResultChunkDataCache
 	db                   *sqlx.DB
-
-	numResultChunks int
+	numResultChunks      int
 }
 
 type ErrMalformedBundle struct {

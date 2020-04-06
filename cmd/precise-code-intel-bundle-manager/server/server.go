@@ -19,9 +19,9 @@ type Server struct {
 	resultChunkDataCache *ResultChunkDataCache
 }
 
-const DatabaseCacheSize = 100
-const DocumentDataCacheSize = 100
-const ResultChunkDataCacheSize = 100
+const DatabaseCacheSize = 100        // TODO - configure
+const DocumentDataCacheSize = 100    // TODO - configure
+const ResultChunkDataCacheSize = 100 // TODO - configure
 
 func New(storageDir string) (*Server, error) {
 	databaseCache, err := NewDatabaseCache(DatabaseCacheSize)
@@ -74,7 +74,7 @@ func (s *Server) handleGetUpload(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, file)
+	_, _ = io.Copy(w, file) // TODO - handle error
 }
 
 func (s *Server) handlePostUpload(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +95,7 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename f
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(targetFile, r.Body)
+	_, _ = io.Copy(targetFile, r.Body) // TODO - handle error
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {

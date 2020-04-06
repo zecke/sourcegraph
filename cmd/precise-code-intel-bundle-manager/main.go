@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/inconshreveable/log15"
 	"github.com/mattn/go-sqlite3"
@@ -23,8 +24,14 @@ var (
 	storageDir = env.Get("LSIF_STORAGE_ROOT", "/lsif-storage", "Root dir containing uploads and converted bundles.")
 )
 
+const JanitorInterval = time.Second * 20 // TODO - configure
+
 //
 // GUARDED
+
+//
+// TODO - move some of this to libs
+//
 
 var libSqlite3Pcre = env.Get("LIBSQLITE3_PCRE", "", "path to the libsqlite3-pcre library")
 
@@ -61,13 +68,20 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// TODO - add and register metrics
 	// bundleManager.RegisterMetrics()
 
 	handler := ot.Middleware(bundleManager.Handler())
 
 	go debugserver.Start()
 
-	// TODO - janitorial stuff
+	go func() {
+		for {
+			_ = bundleManager.Janitor() // TODO - handle error
+			time.Sleep(JanitorInterval)
+
+		}
+	}()
 
 	port := "3187"
 	host := ""
