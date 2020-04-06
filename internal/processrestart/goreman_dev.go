@@ -33,11 +33,11 @@ func restartGoremanDev() error {
 		"searcher",
 		"replacer",
 		"symbols",
+		"precise-code-intel-bundle-manager",
 		"github-proxy",
 		"syntect_server",
 		"zoekt-indexserver",
 		"zoekt-webserver",
-		"precise-code-intel-bundle-manager",
 		// frontend is restarted separately last
 	}
 
