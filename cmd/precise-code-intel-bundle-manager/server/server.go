@@ -13,11 +13,39 @@ import (
 )
 
 type Server struct {
-	StorageDir string
+	storageDir           string
+	databaseCache        *DatabaseCache
+	documentDataCache    *DocumentDataCache
+	resultChunkDataCache *ResultChunkDataCache
 }
 
-// TODO
-// github.com/golang/groupcache/lru
+const DatabaseCacheSize = 100
+const DocumentDataCacheSize = 100
+const ResultChunkDataCacheSize = 100
+
+func New(storageDir string) (*Server, error) {
+	databaseCache, err := NewDatabaseCache(DatabaseCacheSize)
+	if err != nil {
+		return nil, err
+	}
+
+	documentDataCache, err := NewDocumentDataCache(DocumentDataCacheSize)
+	if err != nil {
+		return nil, err
+	}
+
+	resultChunkDataCache, err := NewResultChunkDataCache(ResultChunkDataCacheSize)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Server{
+		storageDir:           storageDir,
+		databaseCache:        databaseCache,
+		documentDataCache:    documentDataCache,
+		resultChunkDataCache: resultChunkDataCache,
+	}, nil
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := mux.NewRouter()
@@ -70,33 +98,21 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename f
 	_, _ = io.Copy(targetFile, r.Body)
 }
 
-func (s *Server) withDatabase(w http.ResponseWriter, r *http.Request, handler func(db *Database) error) {
-	db, err := OpenDatabase(s.dbFilename(idFromRequest(r)))
-	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close()
-
-	if err := handler(db); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	path := q.Get("path")
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		exists, err := db.Exists(path)
 		if err != nil {
 			return err
 		}
 
 		return json.NewEncoder(w).Encode(exists)
-	})
-
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
@@ -105,14 +121,17 @@ func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		locations, err := db.Definitions(path, line, character)
 		if err != nil {
 			return err
 		}
 
 		return json.NewEncoder(w).Encode(locations)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
@@ -121,14 +140,17 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		locations, err := db.References(path, line, character)
 		if err != nil {
 			return err
 		}
 
 		return json.NewEncoder(w).Encode(locations)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
@@ -137,7 +159,7 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		text, hoverRange, exists, err := db.Hover(path, line, character)
 		if err != nil {
 			return err
@@ -157,7 +179,10 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 		}
 
 		return json.NewEncoder(w).Encode(resp)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request) {
@@ -166,14 +191,17 @@ func (s *Server) handleMonikerByPosition(w http.ResponseWriter, r *http.Request)
 	line, _ := strconv.Atoi(q.Get("line"))
 	character, _ := strconv.Atoi(q.Get("character"))
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		monikerData, err := db.MonikerByPosition(path, line, character)
 		if err != nil {
 			return err
 		}
 
 		return json.NewEncoder(w).Encode(monikerData)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +225,7 @@ func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		locations, count, err := db.MonikerResults(tableName, scheme, identifier, skip, take)
 		if err != nil {
 			return err
@@ -212,7 +240,10 @@ func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
 		}
 
 		return json.NewEncoder(w).Encode(resp)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
 
 func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +251,7 @@ func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request
 	path := q.Get("path")
 	packageInformationID := ID(q.Get("packageInformationId"))
 
-	s.withDatabase(w, r, func(db *Database) error {
+	if err := s.withDatabase(r, func(db *Database) error {
 		packageInformationData, exists, err := db.PackageInformation(path, packageInformationID)
 		if err != nil {
 			return err
@@ -234,15 +265,25 @@ func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request
 		}
 
 		return json.NewEncoder(w).Encode(resp)
-	})
+	}); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (s *Server) withDatabase(r *http.Request, handler func(db *Database) error) error {
+	filename := s.dbFilename(idFromRequest(r))
+	openDatabase := func() (*Database, error) { return OpenDatabase(filename, s.documentDataCache, s.resultChunkDataCache) }
+
+	return s.databaseCache.WithDatabase(filename, openDatabase, handler)
 }
 
 func (s *Server) uploadFilename(id int64) string {
-	return filepath.Join(s.StorageDir, "uploads", fmt.Sprintf("%d.lsif.gz", id))
+	return filepath.Join(s.storageDir, "uploads", fmt.Sprintf("%d.lsif.gz", id))
 }
 
 func (s *Server) dbFilename(id int64) string {
-	return filepath.Join(s.StorageDir, "dbs", fmt.Sprintf("%d.lsif.db", id))
+	return filepath.Join(s.storageDir, "dbs", fmt.Sprintf("%d.lsif.db", id))
 }
 
 func idFromRequest(r *http.Request) int64 {

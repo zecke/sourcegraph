@@ -9,11 +9,25 @@ import (
 )
 
 type Database struct {
-	db              *sqlx.DB
+	filename             string
+	documentDataCache    *DocumentDataCache
+	resultChunkDataCache *ResultChunkDataCache
+	db                   *sqlx.DB
+
 	numResultChunks int
 }
 
-func OpenDatabase(filename string) (*Database, error) {
+type ErrMalformedBundle struct {
+	Filename string
+	Name     string
+	Key      string
+}
+
+func (e ErrMalformedBundle) Error() string {
+	return fmt.Sprintf("malformed bundle: unknown %s %s", e.Name, e.Key)
+}
+
+func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultChunkDataCache *ResultChunkDataCache) (*Database, error) {
 	db, err := sqlx.Open("sqlite3_with_pcre", filename)
 	if err != nil {
 		return nil, err
@@ -25,8 +39,10 @@ func OpenDatabase(filename string) (*Database, error) {
 	}
 
 	return &Database{
-		db:              db,
-		numResultChunks: numResultChunks,
+		db:                   db,
+		documentDataCache:    documentDataCache,
+		resultChunkDataCache: resultChunkDataCache,
+		numResultChunks:      numResultChunks,
 	}, nil
 }
 
@@ -40,7 +56,7 @@ func (db *Database) Exists(path string) (bool, error) {
 }
 
 func (db *Database) Definitions(path string, line, character int) ([]InternalLocation, error) {
-	documentData, ranges, exists, err := db.getRangeByPosition(path, line, character)
+	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
 		return nil, err
 	}
@@ -55,14 +71,14 @@ func (db *Database) Definitions(path string, line, character int) ([]InternalLoc
 			return nil, err
 		}
 
-		return db.convertRangesToInternalLocations(documentData, definitionResults)
+		return db.convertRangesToInternalLocations(definitionResults)
 	}
 
 	return nil, nil
 }
 
 func (db *Database) References(path string, line, character int) ([]InternalLocation, error) {
-	documentData, ranges, exists, err := db.getRangeByPosition(path, line, character)
+	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
 		return nil, err
 	}
@@ -78,7 +94,7 @@ func (db *Database) References(path string, line, character int) ([]InternalLoca
 			return nil, err
 		}
 
-		locations, err := db.convertRangesToInternalLocations(documentData, referenceResults)
+		locations, err := db.convertRangesToInternalLocations(referenceResults)
 		if err != nil {
 			return nil, err
 		}
@@ -102,7 +118,11 @@ func (db *Database) Hover(path string, line, character int) (string, Range, bool
 
 		text, exists := documentData.HoverResults[r.HoverResultID]
 		if !exists {
-			return "", Range{}, false, fmt.Errorf("unknown hover result %s", r.HoverResultID)
+			return "", Range{}, false, ErrMalformedBundle{
+				Filename: db.filename,
+				Name:     "hoverResult",
+				Key:      string(r.HoverResultID),
+			}
 		}
 
 		return text, newRange(r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter), true, nil
@@ -123,7 +143,11 @@ func (db *Database) MonikerByPosition(path string, line, character int) ([][]Mon
 		for _, monikerID := range r.MonikerIDs {
 			moniker, exists := documentData.Monikers[monikerID]
 			if !exists {
-				return nil, fmt.Errorf("unknown moniker %s", monikerID)
+				return nil, ErrMalformedBundle{
+					Filename: db.filename,
+					Name:     "moniker",
+					Key:      string(monikerID),
+				}
 			}
 
 			batch = append(batch, moniker)
@@ -186,8 +210,16 @@ func (db *Database) PackageInformation(path string, packageInformationID ID) (Pa
 }
 
 func (db *Database) getDocumentData(path string) (DocumentData, bool, error) {
-	var data string
-	if err := db.db.Get(&data, "SELECT data FROM documents WHERE path = :path", path); err != nil {
+	documentData, err := db.documentDataCache.Get(fmt.Sprintf("%s::%s", db.filename, path), func() (DocumentData, error) {
+		var data string
+		if err := db.db.Get(&data, "SELECT data FROM documents WHERE path = :path", path); err != nil {
+			return DocumentData{}, err
+		}
+
+		return unmarshalDocumentData([]byte(data))
+	})
+
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return DocumentData{}, false, nil
 		}
@@ -195,8 +227,6 @@ func (db *Database) getDocumentData(path string) (DocumentData, bool, error) {
 		return DocumentData{}, false, err
 	}
 
-	// TODO - cache result
-	documentData, err := unmarshalDocumentData([]byte(data))
 	return documentData, true, err
 }
 
@@ -220,20 +250,31 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 	}
 
 	if !exists {
-		// TODO - make a richer error type here
-		return nil, fmt.Errorf("unknown result chunk %s", id)
+		return nil, ErrMalformedBundle{
+			Filename: db.filename,
+			Name:     "result chunk",
+			Key:      string(id),
+		}
 	}
 
 	documentIDRangeIDs, exists := resultChunkData.DocumentIDRangeIDs[id]
 	if !exists {
-		return nil, fmt.Errorf("unknown result %s", id)
+		return nil, ErrMalformedBundle{
+			Filename: db.filename,
+			Name:     "result",
+			Key:      string(id),
+		}
 	}
 
 	var resultData []DocumentPathRangeID
 	for _, documentIDRangeID := range documentIDRangeIDs {
 		path, ok := resultChunkData.DocumentPaths[documentIDRangeID.DocumentID]
 		if !ok {
-			return nil, fmt.Errorf("unknown document path %s", documentIDRangeID.DocumentID)
+			return nil, ErrMalformedBundle{
+				Filename: db.filename,
+				Name:     "documentPath",
+				Key:      string(documentIDRangeID.DocumentID),
+			}
 		}
 
 		resultData = append(resultData, DocumentPathRangeID{
@@ -246,8 +287,16 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 }
 
 func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, error) {
-	var data string
-	if err := db.db.Get(&data, "SELECT data FROM resultChunks WHERE id = :id", hashKey(id, db.numResultChunks)); err != nil {
+	resultChunkData, err := db.resultChunkDataCache.Get(fmt.Sprintf("%s::%s", db.filename, id), func() (ResultChunkData, error) {
+		var data string
+		if err := db.db.Get(&data, "SELECT data FROM resultChunks WHERE id = :id", hashKey(id, db.numResultChunks)); err != nil {
+			return ResultChunkData{}, err
+		}
+
+		return unmarshalResultChunkData([]byte(data))
+	})
+
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return ResultChunkData{}, false, nil
 		}
@@ -255,33 +304,45 @@ func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, erro
 		return ResultChunkData{}, false, err
 	}
 
-	// TODO - cache result
-	resultChunkData, err := unmarshalResultChunkData([]byte(data))
 	return resultChunkData, true, err
 }
 
-func (db *Database) convertRangesToInternalLocations(document DocumentData, resultData []DocumentPathRangeID) ([]InternalLocation, error) {
-	var locations []InternalLocation
+func (db *Database) convertRangesToInternalLocations(resultData []DocumentPathRangeID) ([]InternalLocation, error) {
+	groupedResults := map[string][]ID{}
 	for _, documentPathRangeID := range resultData {
-		// TODO - deduplicate requests for documents
-		documentData, exists, err := db.getDocumentData(documentPathRangeID.Path)
+		groupedResults[documentPathRangeID.Path] = append(groupedResults[documentPathRangeID.Path], documentPathRangeID.RangeID)
+	}
+
+	var locations []InternalLocation
+	for path, rangeIDs := range groupedResults {
+		documentData, exists, err := db.getDocumentData(path)
 		if err != nil {
 			return nil, err
 		}
 
 		if !exists {
-			return nil, fmt.Errorf("unknown document %s", documentPathRangeID.Path)
+			return nil, ErrMalformedBundle{
+				Filename: db.filename,
+				Name:     "document",
+				Key:      string(path),
+			}
 		}
 
-		r, exists := documentData.Ranges[documentPathRangeID.RangeID]
-		if !exists {
-			return nil, fmt.Errorf("unknown range %s", documentPathRangeID.RangeID)
-		}
+		for _, rangeID := range rangeIDs {
+			r, exists := documentData.Ranges[rangeID]
+			if !exists {
+				return nil, ErrMalformedBundle{
+					Filename: db.filename,
+					Name:     "range",
+					Key:      string(rangeID),
+				}
+			}
 
-		locations = append(locations, InternalLocation{
-			Path:  documentPathRangeID.Path,
-			Range: newRange(r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter),
-		})
+			locations = append(locations, InternalLocation{
+				Path:  path,
+				Range: newRange(r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter),
+			})
+		}
 	}
 
 	return locations, nil

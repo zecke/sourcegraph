@@ -57,8 +57,9 @@ func main() {
 		}
 	}
 
-	bundleManager := server.Server{
-		StorageDir: storageDir,
+	bundleManager, err := server.New(storageDir)
+	if err != nil {
+		log.Fatal(err)
 	}
 	// bundleManager.RegisterMetrics()
 

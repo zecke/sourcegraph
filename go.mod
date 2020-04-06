@@ -65,6 +65,7 @@ require (
 	github.com/graph-gophers/graphql-go v0.0.0-20200309224638-dae41bde9ef9
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79
 	github.com/hashicorp/go-multierror v1.0.0
+	github.com/hashicorp/golang-lru v0.5.1
 	github.com/honeycombio/libhoney-go v1.12.3
 	github.com/inconshreveable/log15 v0.0.0-20200109203555-b30bc20e4fd1
 	github.com/jmespath/go-jmespath v0.3.0 // indirect
