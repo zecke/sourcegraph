@@ -11,7 +11,7 @@ func findRanges(ranges map[ID]RangeData, line, character int) []RangeData {
 	}
 
 	sort.Slice(filtered, func(i, j int) bool {
-		return comparePosition(filtered[i], filtered[j].StartLine, filtered[j].StartCharacter) == 0
+		return comparePosition(filtered[i], filtered[j].StartLine, filtered[j].StartCharacter) != 0
 	})
 
 	return filtered
