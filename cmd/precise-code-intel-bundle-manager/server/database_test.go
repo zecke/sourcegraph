@@ -243,22 +243,25 @@ func TestDatabasePackageInformation(t *testing.T) {
 }
 
 func withTestDatabase(t *testing.T, testFunc func(db *Database)) {
-	documentDataCache, err := NewDocumentDataCache(5)
-	if err != nil {
-		t.Fatalf("failed to create document data cache: %s", err)
-	}
-
-	resultChunkDataCache, err := NewResultChunkDataCache(5)
-	if err != nil {
-		t.Fatalf("failed to create result chunk data cache: %s", err)
-	}
-
-	// TODO - how to find this in general?
-	db, err := OpenDatabase("lsif-go@ad3507cb.lsif.db", documentDataCache, resultChunkDataCache)
+	db, err := openTestDatabase()
 	if err != nil {
 		t.Fatalf("failed to open database: %s", err)
 	}
 	defer db.Close()
 
 	testFunc(db)
+}
+
+func openTestDatabase() (*Database, error) {
+	documentDataCache, err := NewDocumentDataCache(1)
+	if err != nil {
+		return nil, err
+	}
+
+	resultChunkDataCache, err := NewResultChunkDataCache(1)
+	if err != nil {
+		return nil, err
+	}
+
+	return OpenDatabase("test-data/lsif-go@ad3507cb.lsif.db", documentDataCache, resultChunkDataCache)
 }
