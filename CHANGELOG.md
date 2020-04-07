@@ -44,6 +44,7 @@ All notable changes to Sourcegraph are documented in this file.
   - `Campaign.changesetPlans` has been renamed to `campaign.changesetPlan`.
   - `createCampaignPlanFromPatches` mutation has been renamed to `createPatchSetFromPatches`.
 - Removed the scoped search field on tree pages. When browsing code, the global search query will now get scoped to the current tree or file. [#9225](https://github.com/sourcegraph/sourcegraph/pull/9225)
+- `URL`s in the extension API are now typed as read-only.
 
 ### Fixed
 

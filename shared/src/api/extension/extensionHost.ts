@@ -166,6 +166,10 @@ function createExtensionAPI(
             registerImplementationProvider: any
         }
     } = {
+        // Removed from the types, but kept for one iteration for BC
+        // TODO remove in 3.16
+        // eslint-disable-next-line @typescript-eslint/ban-ts-ignore
+        // @ts-ignore
         URI: URL,
         Position,
         Range,

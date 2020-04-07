@@ -1,6 +1,6 @@
 import { Position } from '@sourcegraph/extension-api-types'
 import minimatch from 'minimatch'
-import { DocumentFilter, DocumentSelector, TextDocument } from 'sourcegraph'
+import { DocumentFilter, DocumentSelector, TextDocument, ReadonlyURL } from 'sourcegraph'
 
 /**
  * The URI scheme for the resources that hold the body of comments (such as comments on a GitHub
@@ -72,7 +72,7 @@ function match1(selector: DocumentSelector, document: Pick<TextDocument, 'uri' |
  * Taken from
  * https://github.com/Microsoft/vscode/blob/3d35801127f0a62d58d752bc613506e836c5d120/src/vs/editor/common/modes/languageSelector.ts#L24.
  */
-export function score(selector: DocumentSelector, candidateUri: URL, candidateLanguage: string): number {
+export function score(selector: DocumentSelector, candidateUri: ReadonlyURL, candidateLanguage: string): number {
     // array -> take max individual value
     let ret = 0
     for (const filter of selector) {
@@ -87,7 +87,7 @@ export function score(selector: DocumentSelector, candidateUri: URL, candidateLa
     return ret
 }
 
-function score1(selector: DocumentSelector[0], candidateUri: URL, candidateLanguage: string): number {
+function score1(selector: DocumentSelector[0], candidateUri: ReadonlyURL, candidateLanguage: string): number {
     if (typeof selector === 'string') {
         // Shorthand notation: "mylang" -> {language: "mylang"}, "*" -> {language: "*""}.
         if (selector === '*') {

@@ -15,14 +15,8 @@ declare module 'sourcegraph' {
         unsubscribe(): void
     }
 
-    /**
-     * @deprecated Use the global [native `URL` API](https://developer.mozilla.org/en-US/docs/Web/API/URL)
-     */
-    export const URI: typeof URL
-    /**
-     * @deprecated Use the global [native `URL` API](https://developer.mozilla.org/en-US/docs/Web/API/URL)
-     */
-    export type URI = URL
+    export type ReadonlySearchParams = Readonly<Omit<URLSearchParams, 'append' | 'set' | 'delete' | 'sort'>>
+    export type ReadonlyURL = Readonly<Omit<URL, 'searchParams'> & { searchParams: ReadonlySearchParams }>
 
     export class Position {
         /** Zero-based line number. */
@@ -285,7 +279,7 @@ declare module 'sourcegraph' {
         /**
          * The resource identifier of this location.
          */
-        readonly uri: URL
+        readonly uri: ReadonlyURL
 
         /**
          * The document range of this location.
@@ -298,7 +292,7 @@ declare module 'sourcegraph' {
          * @param uri The resource identifier.
          * @param rangeOrPosition The range or position. Positions will be converted to an empty range.
          */
-        constructor(uri: URL, rangeOrPosition?: Range | Position)
+        constructor(uri: ReadonlyURL, rangeOrPosition?: Range | Position)
     }
 
     /**
@@ -402,7 +396,7 @@ declare module 'sourcegraph' {
         pattern?: string
 
         /** A base URI (e.g. root URI of a workspace folder) that the document must be within. */
-        baseUri?: URL | string
+        baseUri?: ReadonlyURL | string
     }
 
     /**
@@ -752,7 +746,7 @@ declare module 'sourcegraph' {
          *
          * @example git://github.com/sourcegraph/sourcegraph?sha#mydir1/mydir2
          */
-        readonly uri: URL
+        readonly uri: ReadonlyURL
     }
 
     /**
@@ -1274,7 +1268,7 @@ declare module 'sourcegraph' {
          *
          * @param url The URL of the link to preview.
          */
-        provideLinkPreview(url: URL): ProviderResult<LinkPreview>
+        provideLinkPreview(url: ReadonlyURL): ProviderResult<LinkPreview>
     }
 
     /**
@@ -1339,7 +1333,7 @@ declare module 'sourcegraph' {
          *
          * @example `https://sourcegraph.com`
          */
-        export const sourcegraphURL: URL
+        export const sourcegraphURL: ReadonlyURL
 
         /**
          * The client application that is running this extension, either 'sourcegraph' for Sourcegraph or 'other'
