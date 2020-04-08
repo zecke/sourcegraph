@@ -11,7 +11,7 @@ import (
 // cache.
 const CloseLoopTestIterations = 100
 
-func TestConnectionCacheEvictionWhileHeld(t *testing.T) {
+func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
 	cache, err := NewDatabaseCache(2)
 	if err != nil {
 		t.Fatalf("unexpected error creating database cache: %s", err)
@@ -20,18 +20,36 @@ func TestConnectionCacheEvictionWhileHeld(t *testing.T) {
 	// database handle that outlives its time in the cache
 	var dbRef *Database
 
+	getLSIFVersion := func(db *Database) (string, error) {
+		var version string
+		err := db.db.Get(&version, "SELECT lsifVersion FROM meta LIMIT 1")
+		return version, err
+	}
+
+	assertLSIFVersion := func(db *Database) {
+		if version, err := getLSIFVersion(db); err != nil {
+			t.Fatalf("unexpected error querying db: %s", err)
+		} else if version != "0.4.3" {
+			t.Errorf("unexpected lsifVersion: want=%s have=%s", "0.4.3", version)
+		}
+	}
+
 	// cache: foo
 	if err := cache.WithDatabase("foo", openTestDatabase, func(db1 *Database) error {
 		dbRef = db1
 
 		// cache: bar,foo
-		if err := cache.WithDatabase("bar", openTestDatabase, noopHandler); err != nil {
+		if err := cache.WithDatabase("bar", openTestDatabase, func(db *Database) error {
+			return nil
+		}); err != nil {
 			return err
 		}
 
 		// cache: baz, bar
 		// note: foo was evicted but should not be closed
-		if err := cache.WithDatabase("baz", openTestDatabase, noopHandler); err != nil {
+		if err := cache.WithDatabase("baz", openTestDatabase, func(db *Database) error {
+			return nil
+		}); err != nil {
 			return err
 		}
 
@@ -42,8 +60,8 @@ func TestConnectionCacheEvictionWhileHeld(t *testing.T) {
 				t.Fatalf("unexpected cached database")
 			}
 
-			assertLSIFVersion(t, db1)
-			assertLSIFVersion(t, db2)
+			assertLSIFVersion(db1)
+			assertLSIFVersion(db2)
 			return nil
 		})
 	}); err != nil {
@@ -51,37 +69,15 @@ func TestConnectionCacheEvictionWhileHeld(t *testing.T) {
 	}
 
 	// evicted database is closed after use
-	assertClosed(t, dbRef)
-}
-
-func noopHandler(_ *Database) error {
-	return nil
-}
-
-func getLSIFVersion(db *Database) (string, error) {
-	var version string
-	err := db.db.Get(&version, "SELECT lsifVersion FROM meta LIMIT 1")
-	return version, err
-}
-
-func assertLSIFVersion(t *testing.T, db *Database) {
-	if version, err := getLSIFVersion(db); err != nil {
-		t.Fatalf("unexpected error querying db: %s", err)
-	} else if version != "0.4.3" {
-		t.Errorf("unexpected lsifVersion: want=%s have=%s", "0.4.3", version)
-	}
-}
-
-func assertClosed(t *testing.T, db *Database) {
-	for i := 0; i < 200; i++ {
-		if _, err := getLSIFVersion(db); err != nil {
+	for i := 0; i < CloseLoopTestIterations; i++ {
+		if _, err := getLSIFVersion(dbRef); err != nil {
 			break
 		}
 
 		time.Sleep(time.Millisecond)
 	}
 
-	if _, err := getLSIFVersion(db); err == nil {
+	if _, err := getLSIFVersion(dbRef); err == nil {
 		t.Fatalf("unexpected nil error")
 	} else if !strings.Contains(err.Error(), "database is closed") {
 		t.Fatalf("unexpected error: want=%s have=%s", "database is closed", err)

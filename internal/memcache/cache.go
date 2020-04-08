@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-// Cache is an in-memory LRU cache.
+// Cache is a generic in-memory LRU cache.
 type Cache interface {
 	// Size returns the current sum of all cache entry sizes.
 	Size() int
@@ -23,6 +23,9 @@ type ValueFactory func() (interface{}, int, error)
 // EvictCallback is invoked when an entry is pushed from the cache.
 type EvictCallback func(key interface{}, value interface{})
 
+// cache implements the Cache interface. This implementation is based off of
+// github.com/hashicorp/golang-lru, but allows cache values to report their
+// own size instead of using the length of evictList as the sole heuristic.
 type cache struct {
 	size      int                           // sum of all cache entry sizes
 	maxSize   int                           // upper bound on the sum of all cache entry sizes

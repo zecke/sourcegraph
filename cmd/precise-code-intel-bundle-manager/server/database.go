@@ -209,7 +209,7 @@ func (db *Database) PackageInformation(path string, packageInformationID ID) (Pa
 }
 
 func (db *Database) getDocumentData(path string) (DocumentData, bool, error) {
-	documentData, err := db.documentDataCache.Get(fmt.Sprintf("%s::%s", db.filename, path), func() (DocumentData, error) {
+	documentData, err := db.documentDataCache.GetOrCreate(fmt.Sprintf("%s::%s", db.filename, path), func() (DocumentData, error) {
 		var data string
 		if err := db.db.Get(&data, "SELECT data FROM documents WHERE path = :path", path); err != nil {
 			return DocumentData{}, err
@@ -286,7 +286,7 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 }
 
 func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, error) {
-	resultChunkData, err := db.resultChunkDataCache.Get(fmt.Sprintf("%s::%s", db.filename, id), func() (ResultChunkData, error) {
+	resultChunkData, err := db.resultChunkDataCache.GetOrCreate(fmt.Sprintf("%s::%s", db.filename, id), func() (ResultChunkData, error) {
 		var data string
 		if err := db.db.Get(&data, "SELECT data FROM resultChunks WHERE id = :id", hashKey(id, db.numResultChunks)); err != nil {
 			return ResultChunkData{}, err
