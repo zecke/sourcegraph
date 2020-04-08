@@ -38,9 +38,11 @@ func NewJanitor(opts JanitorOpts) *Janitor {
 	}
 }
 
-// Janitor runs a clean-up routine. See the methods Server.cleanFailedUploads,
-// Server.removeDeadDumps, and Server.freeSpace for specifics.
-func (j *Janitor) Janitor() error {
+// Run performs a best-effort cleanup. See the following methods for more specifics.
+//   - cleanFailedUploads
+//   - removeDeadDumps
+//   - freeSpace
+func (j *Janitor) Run() error {
 	cleanupFns := []func() error{
 		j.cleanFailedUploads,
 		func() error { return j.removeDeadDumps(client.DefaultClient.States) },

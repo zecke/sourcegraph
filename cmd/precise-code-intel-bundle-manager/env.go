@@ -20,10 +20,12 @@ var (
 	rawMaxUnconvertedUploadAge  = envGet("MAX_UNCONVERTED_UPLOAD_AGE", "1d", "The maximum time an unconverted upload can sit on disk.")
 )
 
+// envGet is like env.Get but prefixes all envvars
 func envGet(name, defaultValue, description string) string {
 	return env.Get(fmt.Sprintf("%s_%s", envPrefix, name), defaultValue, description)
 }
 
+// mustGet returns the non-empty version of the given raw value fatally logs on failure.
 func mustGet(rawValue, name string) string {
 	if rawValue == "" {
 		log.Fatalf("invalid value %q for %s_%s: no value supplied", rawValue, envPrefix, name)
@@ -32,6 +34,8 @@ func mustGet(rawValue, name string) string {
 	return rawValue
 }
 
+
+// mustParseInt returns the integer version of the given raw value fatally logs on failure.
 func mustParseInt(rawValue, name string) int {
 	i, err := strconv.ParseInt(rawValue, 10, 64)
 	if err != nil {
@@ -41,6 +45,8 @@ func mustParseInt(rawValue, name string) int {
 	return int(i)
 }
 
+// mustParsePercent returns the integer percent (in range [0, 100]) version of the given raw
+// value fatally logs on failure.
 func mustParsePercent(rawValue, name string) int {
 	p := mustParseInt(rawValue, name)
 	if p < 0 || p > 100 {
@@ -50,6 +56,7 @@ func mustParsePercent(rawValue, name string) int {
 	return p
 }
 
+// mustParseInterval returns the interval version of the given raw value fatally logs on failure.
 func mustParseInterval(rawValue, name string) time.Duration {
 	d, err := time.ParseDuration(rawValue)
 	if err != nil {
@@ -58,3 +65,12 @@ func mustParseInterval(rawValue, name string) time.Duration {
 
 	return d
 }
+
+
+
+
+
+
+
+
+

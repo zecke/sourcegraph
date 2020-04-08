@@ -45,27 +45,31 @@ func main() {
 		host = "127.0.0.1"
 	}
 
-	server, err := server.New(server.ServerOpts{
+	serverInst, err := server.New(server.ServerOpts{
 		Host:                     host,
 		Port:                     3187,
 		BundleDir:                bundleDir,
 		DatabaseCacheSize:        databaseCacheSize,
 		DocumentDataCacheSize:    documentDataCacheSize,
 		ResultChunkDataCacheSize: resultChunkDataCacheSize,
-		DesiredPercentFree:       desiredPercentFree,
-		MaxUnconvertedUploadAge:  maxUnconvertedUploadAge,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	go server.Start()
+	go serverInst.Start()
 	go debugserver.Start()
 
 	go func() {
+		janitorInst := server.NewJanitor(server.JanitorOpts{
+			BundleDir:               bundleDir,
+			DesiredPercentFree:      desiredPercentFree,
+			MaxUnconvertedUploadAge: maxUnconvertedUploadAge,
+		})
+
 		for {
-			if err := server.Janitor(); err != nil {
-				log15.Error("Failed to run cleanup process", "error", err)
+			if err := janitorInst.Run(); err != nil {
+				log15.Error("Failed to run janitor process", "error", err)
 			}
 
 			time.Sleep(janitorInterval)
