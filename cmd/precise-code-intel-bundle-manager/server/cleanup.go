@@ -16,7 +16,13 @@ import (
 const DeadDumpBatchSize = 100
 
 func (s *Server) Janitor() error {
-	for _, fn := range []func() error{s.cleanFailedUploads, s.removeDeadDumps, s.freeSpace} {
+	cleanupFns := []func() error{
+		s.cleanFailedUploads,
+		func() error { return s.removeDeadDumps(client.DefaultClient.States) },
+		func() error { return s.freeSpace(client.DefaultClient.Prune) },
+	}
+
+	for _, fn := range cleanupFns {
 		if err := fn(); err != nil {
 			return err
 		}
@@ -44,7 +50,7 @@ func (s *Server) cleanFailedUploads() error {
 	return nil
 }
 
-func (s *Server) removeDeadDumps() error {
+func (s *Server) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (map[int]string, error)) error {
 	pathsByID, err := s.databasePathsByID()
 	if err != nil {
 		return err
@@ -56,8 +62,8 @@ func (s *Server) removeDeadDumps() error {
 	}
 
 	allStates := map[int]string{}
-	for _, batch := range batchSlice(ids, DeadDumpBatchSize) {
-		states, err := client.DefaultClient.States(context.Background(), batch)
+	for _, batch := range batchIntSlice(ids, DeadDumpBatchSize) {
+		states, err := statesFn(context.Background(), batch)
 		if err != nil {
 			return err
 		}
@@ -94,13 +100,13 @@ func (s *Server) databasePathsByID() (map[int]string, error) {
 	return pathsByID, nil
 }
 
-func (s *Server) freeSpace() error {
+func (s *Server) freeSpace(pruneFn func(ctx context.Context) (int64, bool, error)) error {
 	bytesToFree, err := s.bytesToFree()
 	if err != nil || bytesToFree == 0 {
 		return err
 	}
 
-	return s.cleanOldDumps(bytesToFree)
+	return s.cleanOldDumps(pruneFn, bytesToFree)
 }
 
 func (s *Server) bytesToFree() (uint64, error) {
@@ -130,9 +136,9 @@ func (s *Server) diskSize() (uint64, uint64, error) {
 	return s.diskSizer.Size()
 }
 
-func (s *Server) cleanOldDumps(bytesToFree uint64) error {
+func (s *Server) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, error), bytesToFree uint64) error {
 	for bytesToFree > 0 {
-		bytesRemoved, pruned, err := s.cleanOldDump()
+		bytesRemoved, pruned, err := s.cleanOldDump(pruneFn)
 		if err != nil {
 			return err
 		}
@@ -150,8 +156,8 @@ func (s *Server) cleanOldDumps(bytesToFree uint64) error {
 	return nil
 }
 
-func (s *Server) cleanOldDump() (uint64, bool, error) {
-	id, prunable, err := client.DefaultClient.Prune(context.Background())
+func (s *Server) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, error)) (uint64, bool, error) {
+	id, prunable, err := pruneFn(context.Background())
 	if err != nil || !prunable {
 		return 0, false, err
 	}
@@ -169,7 +175,7 @@ func (s *Server) cleanOldDump() (uint64, bool, error) {
 	return fileSize, true, nil
 }
 
-func batchSlice(s []int, batchSize int) [][]int {
+func batchIntSlice(s []int, batchSize int) [][]int {
 	batches := [][]int{}
 	for len(s) > batchSize {
 		batches = append(batches, s[:batchSize])
