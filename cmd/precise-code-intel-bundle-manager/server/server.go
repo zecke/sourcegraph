@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -91,6 +93,7 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
+// GET /uploads/{id:[0-9]+}
 func (s *Server) handleGetUpload(w http.ResponseWriter, r *http.Request) {
 	file, err := os.Open(uploadFilename(s.bundleDir, idFromRequest(r)))
 	if err != nil {
@@ -99,17 +102,158 @@ func (s *Server) handleGetUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	_, _ = io.Copy(w, file)
+	copyAll(w, file)
 }
 
+// POST /uploads/{id:[0-9]+}
 func (s *Server) handlePostUpload(w http.ResponseWriter, r *http.Request) {
 	s.doUpload(w, r, uploadFilename)
 }
 
+// POST /dbs/{id:[0-9]+}
 func (s *Server) handlePostDatabase(w http.ResponseWriter, r *http.Request) {
 	s.doUpload(w, r, dbFilename)
 }
 
+// GET /dbs/{id:[0-9]+}/exists
+func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+
+		return db.Exists(path)
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/definitions
+func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+		line, _ := strconv.Atoi(q.Get("line"))
+		character, _ := strconv.Atoi(q.Get("character"))
+
+		return db.Definitions(path, line, character)
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/references
+func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+		line, _ := strconv.Atoi(q.Get("line"))
+		character, _ := strconv.Atoi(q.Get("character"))
+
+		return db.References(path, line, character)
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/hover
+func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+		line, _ := strconv.Atoi(q.Get("line"))
+		character, _ := strconv.Atoi(q.Get("character"))
+
+		text, hoverRange, exists, err := db.Hover(path, line, character)
+		if err != nil || !exists {
+			return nil, err
+		}
+
+		return map[string]interface{}{"text": text, "range": hoverRange}, nil
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/monikersByPosition
+func (s *Server) handleMonikersByPosition(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+		line, _ := strconv.Atoi(q.Get("line"))
+		character, _ := strconv.Atoi(q.Get("character"))
+
+		return db.MonikersByPosition(path, line, character)
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/monikerResults
+func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		modelType := q.Get("modelType")
+		scheme := q.Get("scheme")
+		identifier := q.Get("identifier")
+		skip, _ := strconv.Atoi(q.Get("skip"))
+		take, err := strconv.Atoi(q.Get("take"))
+		if err != nil {
+			take = 100
+		}
+
+		var tableName string
+		if modelType == "definition" {
+			tableName = "definitions"
+		} else if modelType == "reference" {
+			tableName = "references"
+		} else {
+			return nil, fmt.Errorf("illegal tableName supplied")
+		}
+
+		locations, count, err := db.MonikerResults(tableName, scheme, identifier, skip, take)
+		if err != nil {
+			return nil, err
+		}
+
+		return map[string]interface{}{"locations": locations, "count": count}, nil
+	})
+}
+
+// GET /dbs/{id:[0-9]+}/packageInformation
+func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request) {
+	s.dbQuery(w, r, func(db *Database) (interface{}, error) {
+		q := r.URL.Query()
+		path := q.Get("path")
+		packageInformationID := ID(q.Get("packageInformationId"))
+
+		packageInformationData, exists, err := db.PackageInformation(path, packageInformationID)
+		if err != nil || !exists {
+			return nil, err
+		}
+
+		return packageInformationData, nil
+	})
+}
+
+// idFromRequest returns the database id from the request URL's path. This method
+// must only be called from routes containing the `id:[0-9]+` pattern, as the error
+// return from ParseInt is not checked.
+func idFromRequest(r *http.Request) int64 {
+	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
+	return id
+}
+
+// copyAll writes the contents of r to w and logs on write failure.
+func copyAll(w http.ResponseWriter, r io.Reader) {
+	if _, err := io.Copy(w, r); err != nil {
+		// TODO - log
+	}
+}
+
+// writeJSON writes the JSON-encoded payload to w and logs on write failure.
+// If there is an encoding error, then a 500-level status is written to w.
+func writeJSON(w http.ResponseWriter, payload interface{}) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		// TODO - also log
+		http.Error(w, "", http.StatusInternalServerError)
+	}
+
+	copyAll(w, bytes.NewReader(data))
+}
+
+// doUpload writes the HTTP request body to the path determined by the given
+// makeFilename function.
 func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename func(bundleDir string, id int64) string) {
 	defer r.Body.Close()
 
@@ -123,197 +267,29 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename f
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		exists, err := db.Exists(path)
-		if err != nil {
-			return err
-		}
-
-		_ = json.NewEncoder(w).Encode(exists)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-	line, _ := strconv.Atoi(q.Get("line"))
-	character, _ := strconv.Atoi(q.Get("character"))
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		locations, err := db.Definitions(path, line, character)
-		if err != nil {
-			return err
-		}
-
-		_ = json.NewEncoder(w).Encode(locations)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-	line, _ := strconv.Atoi(q.Get("line"))
-	character, _ := strconv.Atoi(q.Get("character"))
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		locations, err := db.References(path, line, character)
-		if err != nil {
-			return err
-		}
-
-		_ = json.NewEncoder(w).Encode(locations)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-	line, _ := strconv.Atoi(q.Get("line"))
-	character, _ := strconv.Atoi(q.Get("character"))
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		text, hoverRange, exists, err := db.Hover(path, line, character)
-		if err != nil {
-			return err
-		}
-
-		var resp interface{}
-		if exists {
-			resp = struct {
-				Text  string `json:"text"`
-				Range Range  `json:"range"`
-			}{
-				Text:  text,
-				Range: hoverRange,
-			}
-		} else {
-			resp = nil
-		}
-
-		_ = json.NewEncoder(w).Encode(resp)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handleMonikersByPosition(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-	line, _ := strconv.Atoi(q.Get("line"))
-	character, _ := strconv.Atoi(q.Get("character"))
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		monikerData, err := db.MonikersByPosition(path, line, character)
-		if err != nil {
-			return err
-		}
-
-		_ = json.NewEncoder(w).Encode(monikerData)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	modelType := q.Get("modelType")
-	scheme := q.Get("scheme")
-	identifier := q.Get("identifier")
-	skip, _ := strconv.Atoi(q.Get("skip"))
-	take, err := strconv.Atoi(q.Get("take"))
-	if err != nil {
-		take = 100
-	}
-
-	var tableName string
-	if modelType == "definition" {
-		tableName = "definitions"
-	} else if modelType == "reference" {
-		tableName = "references"
-	} else {
-		http.Error(w, "", http.StatusBadRequest)
-		return
-	}
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		locations, count, err := db.MonikerResults(tableName, scheme, identifier, skip, take)
-		if err != nil {
-			return err
-		}
-
-		resp := struct {
-			Locations []Location `json:"locations"`
-			Count     int        `json:"count"`
-		}{
-			Locations: locations,
-			Count:     count,
-		}
-
-		_ = json.NewEncoder(w).Encode(resp)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	path := q.Get("path")
-	packageInformationID := ID(q.Get("packageInformationId"))
-
-	if err := s.withDatabase(r, func(db *Database) error {
-		packageInformationData, exists, err := db.PackageInformation(path, packageInformationID)
-		if err != nil {
-			return err
-		}
-
-		var resp interface{}
-		if exists {
-			resp = packageInformationData
-		} else {
-			resp = nil
-		}
-
-		_ = json.NewEncoder(w).Encode(resp)
-		return nil
-	}); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-}
-
-func (s *Server) withDatabase(r *http.Request, handler func(db *Database) error) error {
+// dbQuery invokes the given handler with the database instance chosen from the
+// route's id value and serializes the resulting value to the response writer.
+func (s *Server) dbQuery(w http.ResponseWriter, r *http.Request, handler func(db *Database) (interface{}, error)) {
 	filename := dbFilename(s.bundleDir, idFromRequest(r))
-	openDatabase := func() (*Database, error) { return OpenDatabase(filename, s.documentDataCache, s.resultChunkDataCache) }
-	return s.databaseCache.WithDatabase(filename, openDatabase, handler)
-}
 
-func idFromRequest(r *http.Request) int64 {
-	id, _ := strconv.ParseInt(mux.Vars(r)["id"], 10, 64)
-	return id
+	openDatabase := func() (*Database, error) {
+		return OpenDatabase(filename, s.documentDataCache, s.resultChunkDataCache)
+	}
+
+	cacheHandler := func(db *Database) error {
+		payload, err := handler(db)
+		if err != nil {
+			return err
+		}
+
+		writeJSON(w, payload)
+		return nil
+	}
+
+	if err := s.databaseCache.WithDatabase(filename, openDatabase, cacheHandler); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
 }
