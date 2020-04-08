@@ -8,20 +8,9 @@ import (
 )
 
 func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
-
 	cache, err := NewDatabaseCache(2)
 	if err != nil {
 		t.Fatalf("unexpected error creating database cache: %s", err)
-	}
-
-	readMetaLoop := func(db *Database) {
-		for i := 0; i < 100; i++ {
-			if _, err := ReadMeta(db.db); err != nil {
-				break
-			}
-
-			time.Sleep(time.Millisecond)
-		}
 	}
 
 	// reference to a db handle that outlives the cache entry
@@ -54,16 +43,17 @@ func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
 			}
 
 			// evicted database stays open while held
-			readMetaLoop(db1)
-
+			_ = readMetaLoop(db1)
 			meta1, err1 := ReadMeta(db1.db)
 			meta2, err2 := ReadMeta(db2.db)
 
 			if err1 != nil {
 				return err1
-			} else if err2 != nil {
+			}
+			if err2 != nil {
 				return err2
-			} else if meta1.LSIFVersion != "0.4.3" || meta2.LSIFVersion != "0.4.3" {
+			}
+			if meta1.LSIFVersion != "0.4.3" || meta2.LSIFVersion != "0.4.3" {
 				return fmt.Errorf("unexpected lsif version: want=%s have=%s %s", "0.4.3", meta1.LSIFVersion, meta2.LSIFVersion)
 			}
 
@@ -73,13 +63,22 @@ func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
 		t.Fatalf("unexpected error during test: %s", err)
 	}
 
-	// spin until closed
-	readMetaLoop(dbRef)
-
 	// evicted database is eventually closed
-	if _, err := ReadMeta(dbRef.db); err == nil {
+	if err := readMetaLoop(dbRef); err == nil {
 		t.Fatalf("unexpected nil error")
 	} else if !strings.Contains(err.Error(), "database is closed") {
 		t.Fatalf("unexpected error: want=%s have=%s", "database is closed", err)
 	}
+}
+
+func readMetaLoop(db *Database) (err error) {
+	for i := 0; i < 100; i++ {
+		if _, err = ReadMeta(db.db); err != nil {
+			break
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	return
 }
