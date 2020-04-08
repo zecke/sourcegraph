@@ -8,30 +8,72 @@ import (
 	"github.com/keegancsmith/sqlf"
 )
 
+// Database wraps access to a single processed SQLite bundle.
 type Database struct {
-	filename             string
-	documentDataCache    *DocumentDataCache
-	resultChunkDataCache *ResultChunkDataCache
-	db                   *sqlx.DB
-	numResultChunks      int
+	db                   *sqlx.DB              // the SQLite handle
+	filename             string                // the SQLite filename
+	documentDataCache    *DocumentDataCache    // shared cache
+	resultChunkDataCache *ResultChunkDataCache // shared cache
+	numResultChunks      int                   // numResultChunks value from meta row
 }
 
+// TODO - rename
+type InternalLocation struct {
+	Path  string `json:"path"`
+	Range Range  `json:"range"`
+}
+
+type Range struct {
+	Start Position `json:"start"`
+	End   Position `json:"end"`
+}
+
+type Position struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+func newRange(startLine, startCharacter, endLine, endCharacter int) Range {
+	return Range{
+		Start: Position{
+			Line:      startLine,
+			Character: startCharacter,
+		},
+		End: Position{
+			Line:      endLine,
+			Character: endCharacter,
+		},
+	}
+}
+
+// documentPathRangeID denotes a range qualfied by its containing document.
+type documentPathRangeID struct {
+	Path    string
+	RangeID ID
+}
+
+// ErrMalformedBundle is returned when a bundle is missing an expected map key.
 type ErrMalformedBundle struct {
-	Filename string
-	Name     string
-	Key      string
+	Filename string // the filename of the malformed SQLite
+	Name     string // the type of value key should contain
+	Key      string // the missing key
 }
 
 func (e ErrMalformedBundle) Error() string {
 	return fmt.Sprintf("malformed bundle: unknown %s %s", e.Name, e.Key)
 }
 
+// BundleMeta represents the values in the meta row.
 type BundleMeta struct {
-	LSIFVersion        string
+	// LSIFVersion is the version of the original index.
+	LSIFVersion string
+	// SourcegraphVersion is the version of the worker that processed the bundle.
 	SourcegraphVersion string
-	NumResultChunks    int
+	// NumResultChunks is the number of rows in the resultChunks table.
+	NumResultChunks int
 }
 
+// ReadMeta reads the first row from the meta table of the given database.
 func ReadMeta(db *sqlx.DB) (BundleMeta, error) {
 	var rows []struct {
 		ID                 int    `db:"id"`
@@ -55,7 +97,9 @@ func ReadMeta(db *sqlx.DB) (BundleMeta, error) {
 	}, nil
 }
 
+// OpenDatabase opens a handle to th SQLIte file at the given path.
 func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultChunkDataCache *ResultChunkDataCache) (*Database, error) {
+	// TODO - clean up files if they are created
 	db, err := sqlx.Open("sqlite3_with_pcre", filename)
 	if err != nil {
 		return nil, err
@@ -68,21 +112,25 @@ func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultC
 
 	return &Database{
 		db:                   db,
+		filename:             filename,
 		documentDataCache:    documentDataCache,
 		resultChunkDataCache: resultChunkDataCache,
 		numResultChunks:      meta.NumResultChunks,
 	}, nil
 }
 
+// Close closes the underlyign SQLite handle.
 func (db *Database) Close() error {
 	return db.db.Close()
 }
 
+// Exists determines if the path exists in the database.
 func (db *Database) Exists(path string) (bool, error) {
 	_, exists, err := db.getDocumentData(path)
 	return exists, err
 }
 
+// Definitions returns the set of locations defining the symbol at the given position.
 func (db *Database) Definitions(path string, line, character int) ([]InternalLocation, error) {
 	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
@@ -105,6 +153,7 @@ func (db *Database) Definitions(path string, line, character int) ([]InternalLoc
 	return nil, nil
 }
 
+// Definitions returns the set of locations referencing the symbol at the given position.
 func (db *Database) References(path string, line, character int) ([]InternalLocation, error) {
 	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
@@ -133,6 +182,7 @@ func (db *Database) References(path string, line, character int) ([]InternalLoca
 	return allLocations, nil
 }
 
+// Definitions returns the hover text of the symbol at the given position.
 func (db *Database) Hover(path string, line, character int) (string, Range, bool, error) {
 	documentData, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
@@ -150,6 +200,7 @@ func (db *Database) Hover(path string, line, character int) (string, Range, bool
 				Filename: db.filename,
 				Name:     "hoverResult",
 				Key:      string(r.HoverResultID),
+				// TODO - add document context
 			}
 		}
 
@@ -159,6 +210,10 @@ func (db *Database) Hover(path string, line, character int) (string, Range, bool
 	return "", Range{}, false, nil
 }
 
+// MonikersByPosition returns all monikers attached ranges containing the given position. If multiple
+// ranges contain the position, then this method will return multiple sets of monikers. Each slice
+// of monikers are attached to a single range. The order of the output slice is "outside-in", so that
+// the range attached to earlier monikers enclose the range attached to later monikers.
 func (db *Database) MonikersByPosition(path string, line, character int) ([][]MonikerData, error) {
 	documentData, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
@@ -175,6 +230,7 @@ func (db *Database) MonikersByPosition(path string, line, character int) ([][]Mo
 					Filename: db.filename,
 					Name:     "moniker",
 					Key:      string(monikerID),
+					// TODO - add document context
 				}
 			}
 
@@ -187,6 +243,8 @@ func (db *Database) MonikersByPosition(path string, line, character int) ([][]Mo
 	return monikerData, nil
 }
 
+// MonikerResults returns the locations that define or reference the given moniker. This method
+// also returns the size of the complete result set to aid in pagination (along with skip and take).
 func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, take int) ([]InternalLocation, int, error) {
 	query := sqlf.Sprintf("SELECT * FROM '"+tableName+"' WHERE scheme = %s AND identifier = %s LIMIT %s OFFSET %s", scheme, identifier, take, skip)
 
@@ -223,6 +281,7 @@ func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, t
 	return locations, totalCount, nil
 }
 
+// PackageInformation looks up package information data by identifier.
 func (db *Database) PackageInformation(path string, packageInformationID ID) (PackageInformationData, bool, error) {
 	documentData, exists, err := db.getDocumentData(path)
 	if err != nil {
@@ -237,6 +296,8 @@ func (db *Database) PackageInformation(path string, packageInformationID ID) (Pa
 	return packageInformationData, exists, nil
 }
 
+// getDocumentData fetches and unmarshals the document data or the given path. This method caches
+// document data by a unique key prefixed by the database filename.
 func (db *Database) getDocumentData(path string) (DocumentData, bool, error) {
 	documentData, err := db.documentDataCache.GetOrCreate(fmt.Sprintf("%s::%s", db.filename, path), func() (DocumentData, error) {
 		var data string
@@ -258,6 +319,8 @@ func (db *Database) getDocumentData(path string) (DocumentData, bool, error) {
 	return documentData, true, err
 }
 
+// getRangeByPosition returns the ranges the given position. The order of the output slice is "outside-in",
+// so that earlier ranges properly enclose later ranges.
 func (db *Database) getRangeByPosition(path string, line, character int) (DocumentData, []RangeData, bool, error) {
 	documentData, exists, err := db.getDocumentData(path)
 	if err != nil {
@@ -271,7 +334,9 @@ func (db *Database) getRangeByPosition(path string, line, character int) (Docume
 	return documentData, findRanges(documentData.Ranges, line, character), true, nil
 }
 
-func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
+// getResultByID fetches and unmarshals a definition or reference result by identifier.
+// This method caches result chunk data by a unique key prefixed by the database filename.
+func (db *Database) getResultByID(id ID) ([]documentPathRangeID, error) {
 	resultChunkData, exists, err := db.getResultChunkByResultID(id)
 	if err != nil {
 		return nil, err
@@ -291,10 +356,11 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 			Filename: db.filename,
 			Name:     "result",
 			Key:      string(id),
+			// TODO - add result chunk context
 		}
 	}
 
-	var resultData []DocumentPathRangeID
+	var resultData []documentPathRangeID
 	for _, documentIDRangeID := range documentIDRangeIDs {
 		path, ok := resultChunkData.DocumentPaths[documentIDRangeID.DocumentID]
 		if !ok {
@@ -302,10 +368,11 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 				Filename: db.filename,
 				Name:     "documentPath",
 				Key:      string(documentIDRangeID.DocumentID),
+				// TODO - add result chunk context
 			}
 		}
 
-		resultData = append(resultData, DocumentPathRangeID{
+		resultData = append(resultData, documentPathRangeID{
 			Path:    path,
 			RangeID: documentIDRangeID.RangeID,
 		})
@@ -314,6 +381,8 @@ func (db *Database) getResultByID(id ID) ([]DocumentPathRangeID, error) {
 	return resultData, nil
 }
 
+// getResultChunkByResultID fetches and unmarshals the result chunk data with the given identifier.
+// This method caches result chunk data by a unique key prefixed by the database filename.
 func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, error) {
 	resultChunkData, err := db.resultChunkDataCache.GetOrCreate(fmt.Sprintf("%s::%s", db.filename, id), func() (ResultChunkData, error) {
 		var data string
@@ -335,7 +404,13 @@ func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, erro
 	return resultChunkData, true, err
 }
 
-func (db *Database) convertRangesToInternalLocations(resultData []DocumentPathRangeID) ([]InternalLocation, error) {
+// convertRangesToInternalLocations converts pairs of document paths and range identifiers
+// to a list of internal locations.
+func (db *Database) convertRangesToInternalLocations(resultData []documentPathRangeID) ([]InternalLocation, error) {
+	// We potentially have to open a lot of documents. Reduce possible pressure on the
+	// cache by ordering our queries so we only have to read and unmarshal each document
+	// once.
+
 	groupedResults := map[string][]ID{}
 	for _, documentPathRangeID := range resultData {
 		groupedResults[documentPathRangeID.Path] = append(groupedResults[documentPathRangeID.Path], documentPathRangeID.RangeID)
@@ -363,6 +438,7 @@ func (db *Database) convertRangesToInternalLocations(resultData []DocumentPathRa
 					Filename: db.filename,
 					Name:     "range",
 					Key:      string(rangeID),
+					// TODO - add document context
 				}
 			}
 

@@ -13,8 +13,12 @@ import (
 	"github.com/sourcegraph/sourcegraph/internal/diskutil"
 )
 
+// DeadDumpBatchSize is the maximum number of dump ids to request at once from
+// the precise-code-intel-api-server.
 const DeadDumpBatchSize = 100
 
+// Janitor runs a clean-up routine. See the methods Server.cleanFailedUploads,
+// Server.removeDeadDumps, and Server.freeSpace for specifics.
 func (s *Server) Janitor() error {
 	cleanupFns := []func() error{
 		s.cleanFailedUploads,
@@ -31,6 +35,8 @@ func (s *Server) Janitor() error {
 	return nil
 }
 
+// cleanFailedUploads removes all upload files that are older than the configured
+// max unconverted upload age.
 func (s *Server) cleanFailedUploads() error {
 	fileInfos, err := ioutil.ReadDir(filepath.Join(s.bundleDir, "uploads"))
 	if err != nil {
@@ -50,6 +56,9 @@ func (s *Server) cleanFailedUploads() error {
 	return nil
 }
 
+// removeDeadDumps calls the precise-code-intel-api-server to get the current
+// state of the dumps known by this bundle manager. Any dump on disk that is
+// in an errored state or is unknown by the API is removed.
 func (s *Server) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (map[int]string, error)) error {
 	pathsByID, err := s.databasePathsByID()
 	if err != nil {
@@ -84,6 +93,7 @@ func (s *Server) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (
 	return nil
 }
 
+// databasePathsByID returns map of dump ids to their path on disk.
 func (s *Server) databasePathsByID() (map[int]string, error) {
 	fileInfos, err := ioutil.ReadDir(filepath.Join(s.bundleDir, "dbs"))
 	if err != nil {
@@ -100,42 +110,32 @@ func (s *Server) databasePathsByID() (map[int]string, error) {
 	return pathsByID, nil
 }
 
+// freeSpace determines the space available on the device containing the bundle directory,
+// then calls cleanOldDumps to free enough space to get back below the disk usage threshold.
 func (s *Server) freeSpace(pruneFn func(ctx context.Context) (int64, bool, error)) error {
-	bytesToFree, err := s.bytesToFree()
-	if err != nil || bytesToFree == 0 {
-		return err
-	}
-
-	return s.cleanOldDumps(pruneFn, bytesToFree)
-}
-
-func (s *Server) bytesToFree() (uint64, error) {
-	diskSizeBytes, freeBytes, err := s.diskSize()
-	if err != nil {
-		return 0, err
-	}
-
-	desiredFreeBytes := uint64(float64(diskSizeBytes) * float64(s.desiredPercentFree) / 100.0)
-	if desiredFreeBytes < freeBytes {
-		return 0, nil
-	}
-
-	return uint64(desiredFreeBytes - freeBytes), nil
-}
-
-func (s *Server) diskSize() (uint64, uint64, error) {
 	if s.diskSizer == nil {
 		diskSizer, err := diskutil.NewDiskSizer(s.bundleDir)
 		if err != nil {
-			return 0, 0, err
+			return err
 		}
 
 		s.diskSizer = diskSizer
 	}
 
-	return s.diskSizer.Size()
+	diskSizeBytes, freeBytes, err := s.diskSizer.Size()
+	if err != nil {
+		return err
+	}
+
+	if desiredFreeBytes := uint64(float64(diskSizeBytes) * float64(s.desiredPercentFree) / 100.0); freeBytes < desiredFreeBytes {
+		return s.cleanOldDumps(pruneFn, uint64(desiredFreeBytes-freeBytes))
+	}
+
+	return nil
 }
 
+// cleanOldDumps removes dumps from the database (via precise-code-intel-api-server)
+// and the filesystem until at least bytesToFree, or there are no more prunable dumps.
 func (s *Server) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, error), bytesToFree uint64) error {
 	for bytesToFree > 0 {
 		bytesRemoved, pruned, err := s.cleanOldDump(pruneFn)
@@ -156,6 +156,10 @@ func (s *Server) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, e
 	return nil
 }
 
+// cleanOldDump calls the precise-code-intel-api-server for the identifier of
+// the oldest dump to remove then deletes the associated file. This method
+// returns the size of the deleted file on success, and returns a false-valued
+// flag if there are no prunable dumps.
 func (s *Server) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, error)) (uint64, bool, error) {
 	id, prunable, err := pruneFn(context.Background())
 	if err != nil || !prunable {
@@ -163,7 +167,8 @@ func (s *Server) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, er
 	}
 
 	filename := s.dbFilename(id)
-	fileSize, err := filesize(filename)
+
+	fileInfo, err := os.Stat(filename)
 	if err != nil {
 		return 0, false, err
 	}
@@ -172,9 +177,10 @@ func (s *Server) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, er
 		return 0, false, err
 	}
 
-	return fileSize, true, nil
+	return uint64(fileInfo.Size()), true, nil
 }
 
+// batchIntSlice returns slices of s (in order) at most batchSize in length.
 func batchIntSlice(s []int, batchSize int) [][]int {
 	batches := [][]int{}
 	for len(s) > batchSize {
@@ -187,13 +193,4 @@ func batchIntSlice(s []int, batchSize int) [][]int {
 	}
 
 	return batches
-}
-
-func filesize(filename string) (uint64, error) {
-	fileInfo, err := os.Stat(filename)
-	if err != nil {
-		return 0, err
-	}
-
-	return uint64(fileInfo.Size()), nil
 }

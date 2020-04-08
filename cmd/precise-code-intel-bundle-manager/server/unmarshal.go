@@ -4,17 +4,55 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
-	"io/ioutil"
+	"strconv"
 )
 
+// wrappedMapValue represents a JSON-encoded map with the following form.
+// This maintains the same functionality that exists on the TypeScript side.
+//
+//     {
+//       "value": [
+//         ["key-1", "value-1"],
+//         ["key-2", "value-2"],
+//         ...
+//       ]
+//     }
 type wrappedMapValue struct {
 	Value []json.RawMessage `json:"value"`
 }
 
+// wrappedSetValue represents a JSON-encoded set with the following form.
+// This maintains the same functionality that exists on the TypeScript side.
+//
+//     {
+//       "value": [
+//         "value-1",
+//         "value-2",
+//         ...
+//       ]
+//     }
 type wrappedSetValue struct {
 	Value []json.RawMessage `json:"value"`
 }
 
+// UnmarshalJSON converts a JSON number or string into an identifier. This
+// maintains the same functionality that exists on the TypeScript side by
+// simply running JSON.parse() on document and result chunk data blobs.
+func (id *ID) UnmarshalJSON(b []byte) error {
+	if b[0] == '"' {
+		return json.Unmarshal(b, (*string)(id))
+	}
+
+	var value int64
+	if err := json.Unmarshal(b, &value); err != nil {
+		return err
+	}
+
+	*id = ID(strconv.FormatInt(value, 10))
+	return nil
+}
+
+// unmarshalDocumentData unmarshals document data from a gzipped json-encoded blob.
 func unmarshalDocumentData(data []byte) (DocumentData, error) {
 	payload := struct {
 		Ranges             wrappedMapValue `json:"ranges"`
@@ -52,6 +90,33 @@ func unmarshalDocumentData(data []byte) (DocumentData, error) {
 		HoverResults:       hoverResults,
 		Monikers:           monikers,
 		PackageInformation: packageInformation,
+	}, nil
+}
+
+// unmarshalDocumentData unmarshals result chunk data from a gzipped json-encoded blob.
+func unmarshalResultChunkData(data []byte) (ResultChunkData, error) {
+	payload := struct {
+		DocumentPaths      wrappedMapValue `json:"documentPaths"`
+		DocumentIDRangeIDs wrappedMapValue `json:"documentIdRangeIds"`
+	}{}
+
+	if err := unmarshalGzippedJSON(data, &payload); err != nil {
+		return ResultChunkData{}, err
+	}
+
+	documentPaths, err := unmarshalWrappedDocumentPaths(payload.DocumentPaths.Value)
+	if err != nil {
+		return ResultChunkData{}, err
+	}
+
+	documentIDRangeIDs, err := unmarshalWrappedDocumentIdRangeIDs(payload.DocumentIDRangeIDs.Value)
+	if err != nil {
+		return ResultChunkData{}, err
+	}
+
+	return ResultChunkData{
+		DocumentPaths:      documentPaths,
+		DocumentIDRangeIDs: documentIDRangeIDs,
 	}, nil
 }
 
@@ -167,32 +232,6 @@ func unmarshalWrappedPackageInformation(pairs []json.RawMessage) (map[ID]Package
 	return m, nil
 }
 
-func unmarshalResultChunkData(data []byte) (ResultChunkData, error) {
-	payload := struct {
-		DocumentPaths      wrappedMapValue `json:"documentPaths"`
-		DocumentIDRangeIDs wrappedMapValue `json:"documentIdRangeIds"`
-	}{}
-
-	if err := unmarshalGzippedJSON(data, &payload); err != nil {
-		return ResultChunkData{}, err
-	}
-
-	documentPaths, err := unmarshalWrappedDocumentPaths(payload.DocumentPaths.Value)
-	if err != nil {
-		return ResultChunkData{}, err
-	}
-
-	documentIDRangeIDs, err := unmarshalWrappedDocumentIdRangeIDs(payload.DocumentIDRangeIDs.Value)
-	if err != nil {
-		return ResultChunkData{}, err
-	}
-
-	return ResultChunkData{
-		DocumentPaths:      documentPaths,
-		DocumentIDRangeIDs: documentIDRangeIDs,
-	}, nil
-}
-
 func unmarshalWrappedDocumentPaths(pairs []json.RawMessage) (map[ID]string, error) {
 	m := map[ID]string{}
 	for _, pair := range pairs {
@@ -238,16 +277,12 @@ func unmarshalWrappedDocumentIdRangeIDs(pairs []json.RawMessage) (map[ID][]Docum
 	return m, nil
 }
 
+// unmarshalGzippedJSON unmarshals the gzip+json encoded data.
 func unmarshalGzippedJSON(data []byte, payload interface{}) error {
 	gzipReader, err := gzip.NewReader(bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
 
-	decompressed, err := ioutil.ReadAll(gzipReader)
-	if err != nil {
-		return err
-	}
-
-	return json.Unmarshal(decompressed, &payload)
+	return json.NewDecoder(gzipReader).Decode(&payload)
 }

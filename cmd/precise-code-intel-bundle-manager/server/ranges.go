@@ -2,6 +2,9 @@ package server
 
 import "sort"
 
+// findRanges filters the given ranges and returns those that contain the position constructed
+// from line and character. The order of the output slice is "outside-in", so that earlier
+// ranges properly enclose later ranges.
 func findRanges(ranges map[ID]RangeData, line, character int) []RangeData {
 	var filtered []RangeData
 	for _, r := range ranges {
@@ -17,6 +20,9 @@ func findRanges(ranges map[ID]RangeData, line, character int) []RangeData {
 	return filtered
 }
 
+// comparePosition compres the range r with the position constructed from line and character.
+// Returns -1 if the position occurs before the range, +1 if it occurs after, and 0 if the
+// position is inside of the range.
 func comparePosition(r RangeData, line, character int) int {
 	if line < r.StartLine {
 		return 1
