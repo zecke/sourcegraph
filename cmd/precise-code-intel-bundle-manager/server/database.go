@@ -26,14 +26,43 @@ func (e ErrMalformedBundle) Error() string {
 	return fmt.Sprintf("malformed bundle: unknown %s %s", e.Name, e.Key)
 }
 
+type BundleMeta struct {
+	LSIFVersion        string
+	SourcegraphVersion string
+	NumResultChunks    int
+}
+
+func ReadMeta(db *sqlx.DB) (BundleMeta, error) {
+	var rows []struct {
+		ID                 int    `db:"id"`
+		LSIFVersion        string `db:"lsifVersion"`
+		SourcegraphVersion string `db:"sourcegraphVersion"`
+		NumResultChunks    int    `db:"numResultChunks"`
+	}
+
+	if err := db.Select(&rows, "SELECT * FROM meta LIMIT 1"); err != nil {
+		return BundleMeta{}, err
+	}
+
+	if len(rows) == 0 {
+		return BundleMeta{}, fmt.Errorf("no rows in meta table")
+	}
+
+	return BundleMeta{
+		LSIFVersion:        rows[0].LSIFVersion,
+		SourcegraphVersion: rows[0].SourcegraphVersion,
+		NumResultChunks:    rows[0].NumResultChunks,
+	}, nil
+}
+
 func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultChunkDataCache *ResultChunkDataCache) (*Database, error) {
 	db, err := sqlx.Open("sqlite3_with_pcre", filename)
 	if err != nil {
 		return nil, err
 	}
 
-	var numResultChunks int
-	if err := db.Get(&numResultChunks, "SELECT numResultChunks FROM meta LIMIT 1"); err != nil {
+	meta, err := ReadMeta(db)
+	if err != nil {
 		return nil, err
 	}
 
@@ -41,7 +70,7 @@ func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultC
 		db:                   db,
 		documentDataCache:    documentDataCache,
 		resultChunkDataCache: resultChunkDataCache,
-		numResultChunks:      numResultChunks,
+		numResultChunks:      meta.NumResultChunks,
 	}, nil
 }
 

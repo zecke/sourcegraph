@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-bundle-manager/server"
 	"github.com/sourcegraph/sourcegraph/internal/debugserver"
 	"github.com/sourcegraph/sourcegraph/internal/env"
@@ -63,7 +64,10 @@ func main() {
 
 	go func() {
 		for {
-			_ = server.Janitor() // TODO - handle error
+			if err := server.Janitor(); err != nil {
+				log15.Error("Failed to run cleanup process", "error", err)
+			}
+
 			time.Sleep(janitorInterval)
 		}
 	}()

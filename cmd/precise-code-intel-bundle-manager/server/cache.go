@@ -3,6 +3,7 @@ package server
 import (
 	"sync"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/internal/memcache"
 )
 
@@ -54,7 +55,10 @@ func onDatabaseCacheEvict(key interface{}, value interface{}) {
 	entry.once.Do(func() {
 		go func() {
 			entry.wg.Wait()
-			_ = entry.db.Close() // TODO - handle error
+
+			if err := entry.db.Close(); err != nil {
+				log15.Error("Failed to close database", "error", err)
+			}
 		}()
 	})
 }

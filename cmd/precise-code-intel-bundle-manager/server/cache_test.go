@@ -1,38 +1,31 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
 
-// CloseLoopTestIterations is the maximum number of iterations to spin while
-// waiting for a database hand to close after it has been evicted from the
-// cache.
-const CloseLoopTestIterations = 100
-
 func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
+
 	cache, err := NewDatabaseCache(2)
 	if err != nil {
 		t.Fatalf("unexpected error creating database cache: %s", err)
 	}
 
-	// database handle that outlives its time in the cache
-	var dbRef *Database
+	readMetaLoop := func(db *Database) {
+		for i := 0; i < 100; i++ {
+			if _, err := ReadMeta(db.db); err != nil {
+				break
+			}
 
-	getLSIFVersion := func(db *Database) (string, error) {
-		var version string
-		err := db.db.Get(&version, "SELECT lsifVersion FROM meta LIMIT 1")
-		return version, err
-	}
-
-	assertLSIFVersion := func(db *Database) {
-		if version, err := getLSIFVersion(db); err != nil {
-			t.Fatalf("unexpected error querying db: %s", err)
-		} else if version != "0.4.3" {
-			t.Errorf("unexpected lsifVersion: want=%s have=%s", "0.4.3", version)
+			time.Sleep(time.Millisecond)
 		}
 	}
+
+	// reference to a db handle that outlives the cache entry
+	var dbRef *Database
 
 	// cache: foo
 	if err := cache.WithDatabase("foo", openTestDatabase, func(db1 *Database) error {
@@ -57,27 +50,34 @@ func TestDatabaseCacheEvictionWhileHeld(t *testing.T) {
 		// note: this version of foo should be a fresh connection
 		return cache.WithDatabase("foo", openTestDatabase, func(db2 *Database) error {
 			if db1 == db2 {
-				t.Fatalf("unexpected cached database")
+				return fmt.Errorf("unexpected cached database")
 			}
 
-			assertLSIFVersion(db1)
-			assertLSIFVersion(db2)
+			// evicted database stays open while held
+			readMetaLoop(db1)
+
+			meta1, err1 := ReadMeta(db1.db)
+			meta2, err2 := ReadMeta(db2.db)
+
+			if err1 != nil {
+				return err1
+			} else if err2 != nil {
+				return err2
+			} else if meta1.LSIFVersion != "0.4.3" || meta2.LSIFVersion != "0.4.3" {
+				return fmt.Errorf("unexpected lsif version: want=%s have=%s %s", "0.4.3", meta1.LSIFVersion, meta2.LSIFVersion)
+			}
+
 			return nil
 		})
 	}); err != nil {
 		t.Fatalf("unexpected error during test: %s", err)
 	}
 
-	// evicted database is closed after use
-	for i := 0; i < CloseLoopTestIterations; i++ {
-		if _, err := getLSIFVersion(dbRef); err != nil {
-			break
-		}
+	// spin until closed
+	readMetaLoop(dbRef)
 
-		time.Sleep(time.Millisecond)
-	}
-
-	if _, err := getLSIFVersion(dbRef); err == nil {
+	// evicted database is eventually closed
+	if _, err := ReadMeta(dbRef.db); err == nil {
 		t.Fatalf("unexpected nil error")
 	} else if !strings.Contains(err.Error(), "database is closed") {
 		t.Fatalf("unexpected error: want=%s have=%s", "database is closed", err)
