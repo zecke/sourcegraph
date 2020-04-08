@@ -4,11 +4,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
-	"time"
 
-	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-bundle-manager/server"
 	"github.com/sourcegraph/sourcegraph/internal/debugserver"
 	"github.com/sourcegraph/sourcegraph/internal/env"
@@ -33,11 +30,8 @@ func main() {
 		maxUnconvertedUploadAge  = mustParseInterval(rawMaxUnconvertedUploadAge, "MAX_UNCONVERTED_UPLOAD_AGE")
 	)
 
-	for _, dir := range []string{"", "uploads", "dbs"} {
-		path := filepath.Join(bundleDir, dir)
-		if err := os.MkdirAll(path, os.ModePerm); err != nil {
-			log.Fatalf("failed to create directory %s: %s", path, err)
-		}
+	if err := server.PrepDirectories(bundleDir); err != nil {
+		log.Fatalf("failed to prepare directories: %s", err)
 	}
 
 	host := ""
@@ -57,25 +51,16 @@ func main() {
 		log.Fatal(err)
 	}
 
+	janitorInst := server.NewJanitor(server.JanitorOpts{
+		BundleDir:               bundleDir,
+		DesiredPercentFree:      desiredPercentFree,
+		JanitorInterval:         janitorInterval,
+		MaxUnconvertedUploadAge: maxUnconvertedUploadAge,
+	})
+
 	go serverInst.Start()
+	go janitorInst.Start()
 	go debugserver.Start()
-
-	go func() {
-		janitorInst := server.NewJanitor(server.JanitorOpts{
-			BundleDir:               bundleDir,
-			DesiredPercentFree:      desiredPercentFree,
-			MaxUnconvertedUploadAge: maxUnconvertedUploadAge,
-		})
-
-		for {
-			if err := janitorInst.Run(); err != nil {
-				log15.Error("Failed to run janitor process", "error", err)
-			}
-
-			time.Sleep(janitorInterval)
-		}
-	}()
-
 	waitForSignal()
 }
 

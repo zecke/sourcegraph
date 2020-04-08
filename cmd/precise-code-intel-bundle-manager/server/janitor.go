@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/lsifserver/client"
 	"github.com/sourcegraph/sourcegraph/internal/diskutil"
 )
@@ -20,13 +21,16 @@ const DeadDumpBatchSize = 100
 type Janitor struct {
 	bundleDir               string
 	desiredPercentFree      int
+	janitorInterval         time.Duration
 	maxUnconvertedUploadAge time.Duration
-	diskSizer               diskutil.DiskSizer
+
+	diskSizer diskutil.DiskSizer // lazily initiailized
 }
 
 type JanitorOpts struct {
 	BundleDir               string
 	DesiredPercentFree      int
+	JanitorInterval         time.Duration
 	MaxUnconvertedUploadAge time.Duration
 }
 
@@ -34,7 +38,18 @@ func NewJanitor(opts JanitorOpts) *Janitor {
 	return &Janitor{
 		bundleDir:               opts.BundleDir,
 		desiredPercentFree:      opts.DesiredPercentFree,
+		janitorInterval:         opts.JanitorInterval,
 		maxUnconvertedUploadAge: opts.MaxUnconvertedUploadAge,
+	}
+}
+
+func (j *Janitor) Start() {
+	for {
+		if err := j.step(); err != nil {
+			log15.Error("Failed to run janitor process", "error", err)
+		}
+
+		time.Sleep(j.janitorInterval)
 	}
 }
 
@@ -42,7 +57,7 @@ func NewJanitor(opts JanitorOpts) *Janitor {
 //   - cleanFailedUploads
 //   - removeDeadDumps
 //   - freeSpace
-func (j *Janitor) Run() error {
+func (j *Janitor) step() error {
 	cleanupFns := []func() error{
 		j.cleanFailedUploads,
 		func() error { return j.removeDeadDumps(client.DefaultClient.States) },

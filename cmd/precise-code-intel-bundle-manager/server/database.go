@@ -98,7 +98,7 @@ func ReadMeta(db *sqlx.DB) (BundleMeta, error) {
 
 // OpenDatabase opens a handle to th SQLIte file at the given path.
 func OpenDatabase(filename string, documentDataCache *DocumentDataCache, resultChunkDataCache *ResultChunkDataCache) (*Database, error) {
-	// TODO - clean up files if they are created
+	// TODO - What is the behavior if the db is missing? Should we stat first or clean up after?
 	db, err := sqlx.Open("sqlite3_with_pcre", filename)
 	if err != nil {
 		return nil, err

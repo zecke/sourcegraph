@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/gorilla/mux"
+	"github.com/inconshreveable/log15"
 	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 )
 
@@ -236,7 +237,7 @@ func idFromRequest(r *http.Request) int64 {
 // copyAll writes the contents of r to w and logs on write failure.
 func copyAll(w http.ResponseWriter, r io.Reader) {
 	if _, err := io.Copy(w, r); err != nil {
-		// TODO - log
+		log15.Error("Failed to write payload to client", "error", err)
 	}
 }
 
@@ -245,8 +246,9 @@ func copyAll(w http.ResponseWriter, r io.Reader) {
 func writeJSON(w http.ResponseWriter, payload interface{}) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		// TODO - also log
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to serialize result", "error", err)
+		http.Error(w, fmt.Sprintf("failed to serialize result: %s", err.Error()), http.StatusInternalServerError)
+		return
 	}
 
 	copyAll(w, bytes.NewReader(data))
@@ -259,12 +261,14 @@ func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename f
 
 	targetFile, err := os.OpenFile(makeFilename(s.bundleDir, idFromRequest(r)), os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to open target file", "error", err)
+		http.Error(w, fmt.Sprintf("failed to open target file: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
 	if _, err := io.Copy(targetFile, r.Body); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to write payload", "error", err)
+		http.Error(w, fmt.Sprintf("failed to write payload: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 }
@@ -289,7 +293,7 @@ func (s *Server) dbQuery(w http.ResponseWriter, r *http.Request, handler func(db
 	}
 
 	if err := s.databaseCache.WithDatabase(filename, openDatabase, cacheHandler); err != nil {
-		http.Error(w, "", http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("failed to handle query: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 }
