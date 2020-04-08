@@ -2,30 +2,23 @@ package server
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
-	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/sourcegraph/sourcegraph/internal/diskutil"
 	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 )
 
 type Server struct {
-	host                    string
-	port                    int
-	bundleDir               string
-	databaseCache           *DatabaseCache
-	documentDataCache       *DocumentDataCache
-	resultChunkDataCache    *ResultChunkDataCache
-	desiredPercentFree      int
-	diskSizer               diskutil.DiskSizer
-	maxUnconvertedUploadAge time.Duration
+	host                 string
+	port                 int
+	bundleDir            string
+	databaseCache        *DatabaseCache
+	documentDataCache    *DocumentDataCache
+	resultChunkDataCache *ResultChunkDataCache
 }
 
 type ServerOpts struct {
@@ -35,8 +28,6 @@ type ServerOpts struct {
 	DatabaseCacheSize        int
 	DocumentDataCacheSize    int
 	ResultChunkDataCacheSize int
-	DesiredPercentFree       int
-	MaxUnconvertedUploadAge  time.Duration
 }
 
 func New(opts ServerOpts) (*Server, error) {
@@ -56,14 +47,12 @@ func New(opts ServerOpts) (*Server, error) {
 	}
 
 	return &Server{
-		host:                    opts.Host,
-		port:                    opts.Port,
-		bundleDir:               opts.BundleDir,
-		databaseCache:           databaseCache,
-		documentDataCache:       documentDataCache,
-		resultChunkDataCache:    resultChunkDataCache,
-		desiredPercentFree:      opts.DesiredPercentFree,
-		maxUnconvertedUploadAge: opts.MaxUnconvertedUploadAge,
+		host:                 opts.Host,
+		port:                 opts.Port,
+		bundleDir:            opts.BundleDir,
+		databaseCache:        databaseCache,
+		documentDataCache:    documentDataCache,
+		resultChunkDataCache: resultChunkDataCache,
 	}, nil
 }
 
@@ -78,6 +67,11 @@ func (s *Server) Start() error {
 
 	return nil
 }
+
+// NOTE: the stuff below is pretty rough and I'm not planning on putting too much
+// effort into this while we're doing the port. This is an internal API so it's
+// allowed to be a bit shoddy during this transitionary period. I'm not even sure
+// if HTTP is the right transport for the long term.
 
 func (s *Server) handler() http.Handler {
 	mux := mux.NewRouter()
@@ -98,36 +92,39 @@ func (s *Server) handler() http.Handler {
 }
 
 func (s *Server) handleGetUpload(w http.ResponseWriter, r *http.Request) {
-	file, err := os.Open(s.uploadFilename(idFromRequest(r)))
+	file, err := os.Open(uploadFilename(s.bundleDir, idFromRequest(r)))
 	if err != nil {
 		http.Error(w, "Upload not found.", http.StatusNotFound)
 		return
 	}
 	defer file.Close()
 
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, file) // TODO - handle error
+	_, _ = io.Copy(w, file)
 }
 
 func (s *Server) handlePostUpload(w http.ResponseWriter, r *http.Request) {
-	s.doUpload(w, r, s.uploadFilename)
+	s.doUpload(w, r, uploadFilename)
 }
 
 func (s *Server) handlePostDatabase(w http.ResponseWriter, r *http.Request) {
-	s.doUpload(w, r, s.dbFilename)
+	s.doUpload(w, r, dbFilename)
 }
 
-func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename func(id int64) string) {
+func (s *Server) doUpload(w http.ResponseWriter, r *http.Request, makeFilename func(bundleDir string, id int64) string) {
 	defer r.Body.Close()
 
-	targetFile, err := os.OpenFile(makeFilename(idFromRequest(r)), os.O_WRONLY|os.O_CREATE, 0666)
+	targetFile, err := os.OpenFile(makeFilename(s.bundleDir, idFromRequest(r)), os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
 
+	if _, err := io.Copy(targetFile, r.Body); err != nil {
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(targetFile, r.Body) // TODO - handle error
 }
 
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +137,8 @@ func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		return json.NewEncoder(w).Encode(exists)
+		_ = json.NewEncoder(w).Encode(exists)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -159,7 +157,8 @@ func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		return json.NewEncoder(w).Encode(locations)
+		_ = json.NewEncoder(w).Encode(locations)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -178,7 +177,8 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 
-		return json.NewEncoder(w).Encode(locations)
+		_ = json.NewEncoder(w).Encode(locations)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -210,7 +210,8 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 			resp = nil
 		}
 
-		return json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -229,7 +230,8 @@ func (s *Server) handleMonikersByPosition(w http.ResponseWriter, r *http.Request
 			return err
 		}
 
-		return json.NewEncoder(w).Encode(monikerData)
+		_ = json.NewEncoder(w).Encode(monikerData)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -264,14 +266,15 @@ func (s *Server) handleMonikerResults(w http.ResponseWriter, r *http.Request) {
 		}
 
 		resp := struct {
-			Locations []InternalLocation `json:"locations"`
-			Count     int                `json:"count"`
+			Locations []Location `json:"locations"`
+			Count     int        `json:"count"`
 		}{
 			Locations: locations,
 			Count:     count,
 		}
 
-		return json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -296,7 +299,8 @@ func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request
 			resp = nil
 		}
 
-		return json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
+		return nil
 	}); err != nil {
 		http.Error(w, "", http.StatusInternalServerError)
 		return
@@ -304,18 +308,9 @@ func (s *Server) handlePackageInformation(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) withDatabase(r *http.Request, handler func(db *Database) error) error {
-	filename := s.dbFilename(idFromRequest(r))
+	filename := dbFilename(s.bundleDir, idFromRequest(r))
 	openDatabase := func() (*Database, error) { return OpenDatabase(filename, s.documentDataCache, s.resultChunkDataCache) }
-
 	return s.databaseCache.WithDatabase(filename, openDatabase, handler)
-}
-
-func (s *Server) uploadFilename(id int64) string {
-	return filepath.Join(s.bundleDir, "uploads", fmt.Sprintf("%d.lsif.gz", id))
-}
-
-func (s *Server) dbFilename(id int64) string {
-	return filepath.Join(s.bundleDir, "dbs", fmt.Sprintf("%d.lsif.db", id))
 }
 
 func idFromRequest(r *http.Request) int64 {

@@ -17,13 +17,34 @@ import (
 // the precise-code-intel-api-server.
 const DeadDumpBatchSize = 100
 
+type Janitor struct {
+	bundleDir               string
+	desiredPercentFree      int
+	maxUnconvertedUploadAge time.Duration
+	diskSizer               diskutil.DiskSizer
+}
+
+type JanitorOpts struct {
+	BundleDir               string
+	DesiredPercentFree      int
+	MaxUnconvertedUploadAge time.Duration
+}
+
+func NewJanitor(opts JanitorOpts) *Janitor {
+	return &Janitor{
+		bundleDir:               opts.BundleDir,
+		desiredPercentFree:      opts.DesiredPercentFree,
+		maxUnconvertedUploadAge: opts.MaxUnconvertedUploadAge,
+	}
+}
+
 // Janitor runs a clean-up routine. See the methods Server.cleanFailedUploads,
 // Server.removeDeadDumps, and Server.freeSpace for specifics.
-func (s *Server) Janitor() error {
+func (j *Janitor) Janitor() error {
 	cleanupFns := []func() error{
-		s.cleanFailedUploads,
-		func() error { return s.removeDeadDumps(client.DefaultClient.States) },
-		func() error { return s.freeSpace(client.DefaultClient.Prune) },
+		j.cleanFailedUploads,
+		func() error { return j.removeDeadDumps(client.DefaultClient.States) },
+		func() error { return j.freeSpace(client.DefaultClient.Prune) },
 	}
 
 	for _, fn := range cleanupFns {
@@ -37,18 +58,18 @@ func (s *Server) Janitor() error {
 
 // cleanFailedUploads removes all upload files that are older than the configured
 // max unconverted upload age.
-func (s *Server) cleanFailedUploads() error {
-	fileInfos, err := ioutil.ReadDir(filepath.Join(s.bundleDir, "uploads"))
+func (j *Janitor) cleanFailedUploads() error {
+	fileInfos, err := ioutil.ReadDir(uploadsDir(j.bundleDir))
 	if err != nil {
 		return err
 	}
 
 	for _, fileInfo := range fileInfos {
-		if time.Since(fileInfo.ModTime()) < s.maxUnconvertedUploadAge {
+		if time.Since(fileInfo.ModTime()) < j.maxUnconvertedUploadAge {
 			continue
 		}
 
-		if err := os.Remove(filepath.Join(s.bundleDir, "uploads", fileInfo.Name())); err != nil {
+		if err := os.Remove(filepath.Join(uploadsDir(j.bundleDir), fileInfo.Name())); err != nil {
 			return err
 		}
 	}
@@ -59,8 +80,8 @@ func (s *Server) cleanFailedUploads() error {
 // removeDeadDumps calls the precise-code-intel-api-server to get the current
 // state of the dumps known by this bundle manager. Any dump on disk that is
 // in an errored state or is unknown by the API is removed.
-func (s *Server) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (map[int]string, error)) error {
-	pathsByID, err := s.databasePathsByID()
+func (j *Janitor) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (map[int]string, error)) error {
+	pathsByID, err := j.databasePathsByID()
 	if err != nil {
 		return err
 	}
@@ -94,8 +115,8 @@ func (s *Server) removeDeadDumps(statesFn func(ctx context.Context, ids []int) (
 }
 
 // databasePathsByID returns map of dump ids to their path on disk.
-func (s *Server) databasePathsByID() (map[int]string, error) {
-	fileInfos, err := ioutil.ReadDir(filepath.Join(s.bundleDir, "dbs"))
+func (j *Janitor) databasePathsByID() (map[int]string, error) {
+	fileInfos, err := ioutil.ReadDir(dbsDir(j.bundleDir))
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +124,7 @@ func (s *Server) databasePathsByID() (map[int]string, error) {
 	pathsByID := map[int]string{}
 	for _, fileInfo := range fileInfos {
 		if id, err := strconv.Atoi(strings.Split(fileInfo.Name(), ".")[0]); err == nil {
-			pathsByID[int(id)] = filepath.Join(s.bundleDir, "dbs", fileInfo.Name())
+			pathsByID[int(id)] = filepath.Join(dbsDir(j.bundleDir), fileInfo.Name())
 		}
 	}
 
@@ -112,23 +133,23 @@ func (s *Server) databasePathsByID() (map[int]string, error) {
 
 // freeSpace determines the space available on the device containing the bundle directory,
 // then calls cleanOldDumps to free enough space to get back below the disk usage threshold.
-func (s *Server) freeSpace(pruneFn func(ctx context.Context) (int64, bool, error)) error {
-	if s.diskSizer == nil {
-		diskSizer, err := diskutil.NewDiskSizer(s.bundleDir)
+func (j *Janitor) freeSpace(pruneFn func(ctx context.Context) (int64, bool, error)) error {
+	if j.diskSizer == nil {
+		diskSizer, err := diskutil.NewDiskSizer(j.bundleDir)
 		if err != nil {
 			return err
 		}
 
-		s.diskSizer = diskSizer
+		j.diskSizer = diskSizer
 	}
 
-	diskSizeBytes, freeBytes, err := s.diskSizer.Size()
+	diskSizeBytes, freeBytes, err := j.diskSizer.Size()
 	if err != nil {
 		return err
 	}
 
-	if desiredFreeBytes := uint64(float64(diskSizeBytes) * float64(s.desiredPercentFree) / 100.0); freeBytes < desiredFreeBytes {
-		return s.cleanOldDumps(pruneFn, uint64(desiredFreeBytes-freeBytes))
+	if desiredFreeBytes := uint64(float64(diskSizeBytes) * float64(j.desiredPercentFree) / 100.0); freeBytes < desiredFreeBytes {
+		return j.cleanOldDumps(pruneFn, uint64(desiredFreeBytes-freeBytes))
 	}
 
 	return nil
@@ -136,9 +157,9 @@ func (s *Server) freeSpace(pruneFn func(ctx context.Context) (int64, bool, error
 
 // cleanOldDumps removes dumps from the database (via precise-code-intel-api-server)
 // and the filesystem until at least bytesToFree, or there are no more prunable dumps.
-func (s *Server) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, error), bytesToFree uint64) error {
+func (j *Janitor) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, error), bytesToFree uint64) error {
 	for bytesToFree > 0 {
-		bytesRemoved, pruned, err := s.cleanOldDump(pruneFn)
+		bytesRemoved, pruned, err := j.cleanOldDump(pruneFn)
 		if err != nil {
 			return err
 		}
@@ -160,13 +181,13 @@ func (s *Server) cleanOldDumps(pruneFn func(ctx context.Context) (int64, bool, e
 // the oldest dump to remove then deletes the associated file. This method
 // returns the size of the deleted file on success, and returns a false-valued
 // flag if there are no prunable dumps.
-func (s *Server) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, error)) (uint64, bool, error) {
+func (j *Janitor) cleanOldDump(pruneFn func(ctx context.Context) (int64, bool, error)) (uint64, bool, error) {
 	id, prunable, err := pruneFn(context.Background())
 	if err != nil || !prunable {
 		return 0, false, err
 	}
 
-	filename := s.dbFilename(id)
+	filename := dbFilename(j.bundleDir, id)
 
 	fileInfo, err := os.Stat(filename)
 	if err != nil {

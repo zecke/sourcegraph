@@ -17,8 +17,7 @@ type Database struct {
 	numResultChunks      int                   // numResultChunks value from meta row
 }
 
-// TODO - rename
-type InternalLocation struct {
+type Location struct {
 	Path  string `json:"path"`
 	Range Range  `json:"range"`
 }
@@ -131,7 +130,7 @@ func (db *Database) Exists(path string) (bool, error) {
 }
 
 // Definitions returns the set of locations defining the symbol at the given position.
-func (db *Database) Definitions(path string, line, character int) ([]InternalLocation, error) {
+func (db *Database) Definitions(path string, line, character int) ([]Location, error) {
 	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
 		return nil, err
@@ -147,20 +146,20 @@ func (db *Database) Definitions(path string, line, character int) ([]InternalLoc
 			return nil, err
 		}
 
-		return db.convertRangesToInternalLocations(definitionResults)
+		return db.convertRangesToLocations(definitionResults)
 	}
 
 	return nil, nil
 }
 
 // Definitions returns the set of locations referencing the symbol at the given position.
-func (db *Database) References(path string, line, character int) ([]InternalLocation, error) {
+func (db *Database) References(path string, line, character int) ([]Location, error) {
 	_, ranges, exists, err := db.getRangeByPosition(path, line, character)
 	if err != nil || !exists {
 		return nil, err
 	}
 
-	var allLocations []InternalLocation
+	var allLocations []Location
 	for _, r := range ranges {
 		if r.ReferenceResultID == "" {
 			continue
@@ -171,7 +170,7 @@ func (db *Database) References(path string, line, character int) ([]InternalLoca
 			return nil, err
 		}
 
-		locations, err := db.convertRangesToInternalLocations(referenceResults)
+		locations, err := db.convertRangesToLocations(referenceResults)
 		if err != nil {
 			return nil, err
 		}
@@ -245,7 +244,7 @@ func (db *Database) MonikersByPosition(path string, line, character int) ([][]Mo
 
 // MonikerResults returns the locations that define or reference the given moniker. This method
 // also returns the size of the complete result set to aid in pagination (along with skip and take).
-func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, take int) ([]InternalLocation, int, error) {
+func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, take int) ([]Location, int, error) {
 	query := sqlf.Sprintf("SELECT * FROM '"+tableName+"' WHERE scheme = %s AND identifier = %s LIMIT %s OFFSET %s", scheme, identifier, take, skip)
 
 	var rows []struct {
@@ -263,9 +262,9 @@ func (db *Database) MonikerResults(tableName, scheme, identifier string, skip, t
 		return nil, 0, err
 	}
 
-	var locations []InternalLocation
+	var locations []Location
 	for _, row := range rows {
-		locations = append(locations, InternalLocation{
+		locations = append(locations, Location{
 			Path:  row.DocumentPath,
 			Range: newRange(row.StartLine, row.StartCharacter, row.EndLine, row.EndCharacter),
 		})
@@ -404,9 +403,9 @@ func (db *Database) getResultChunkByResultID(id ID) (ResultChunkData, bool, erro
 	return resultChunkData, true, err
 }
 
-// convertRangesToInternalLocations converts pairs of document paths and range identifiers
-// to a list of internal locations.
-func (db *Database) convertRangesToInternalLocations(resultData []documentPathRangeID) ([]InternalLocation, error) {
+// convertRangesToLocations converts pairs of document paths and range identifiers
+// to a list of locations.
+func (db *Database) convertRangesToLocations(resultData []documentPathRangeID) ([]Location, error) {
 	// We potentially have to open a lot of documents. Reduce possible pressure on the
 	// cache by ordering our queries so we only have to read and unmarshal each document
 	// once.
@@ -416,7 +415,7 @@ func (db *Database) convertRangesToInternalLocations(resultData []documentPathRa
 		groupedResults[documentPathRangeID.Path] = append(groupedResults[documentPathRangeID.Path], documentPathRangeID.RangeID)
 	}
 
-	var locations []InternalLocation
+	var locations []Location
 	for path, rangeIDs := range groupedResults {
 		documentData, exists, err := db.getDocumentData(path)
 		if err != nil {
@@ -442,7 +441,7 @@ func (db *Database) convertRangesToInternalLocations(resultData []documentPathRa
 				}
 			}
 
-			locations = append(locations, InternalLocation{
+			locations = append(locations, Location{
 				Path:  path,
 				Range: newRange(r.StartLine, r.StartCharacter, r.EndLine, r.EndCharacter),
 			})

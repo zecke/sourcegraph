@@ -41,7 +41,7 @@ func TestDatabaseDefinitions(t *testing.T) {
 		if actual, err := db.Definitions("cmd/lsif-go/main.go", 110, 22); err != nil {
 			t.Errorf("unexpected error %s", err)
 		} else {
-			expected := []InternalLocation{
+			expected := []Location{
 				{
 					Path:  "internal/index/indexer.go",
 					Range: newRange(20, 1, 20, 6),
@@ -69,7 +69,7 @@ func TestDatabaseReferences(t *testing.T) {
 		if actual, err := db.References("protocol/writer.go", 85, 20); err != nil {
 			t.Errorf("unexpected error %s", err)
 		} else {
-			expected := []InternalLocation{
+			expected := []Location{
 				{
 					Path:  "protocol/writer.go",
 					Range: newRange(85, 17, 85, 26),
@@ -142,7 +142,7 @@ func TestDatabaseMonikersByPosition(t *testing.T) {
 }
 
 func TestDatabaseMonikerResults(t *testing.T) {
-	edgeLocations := []InternalLocation{
+	edgeLocations := []Location{
 		{
 			Path:  "protocol/protocol.go",
 			Range: newRange(600, 1, 600, 5),
@@ -185,7 +185,7 @@ func TestDatabaseMonikerResults(t *testing.T) {
 		},
 	}
 
-	markdownLocations := []InternalLocation{
+	markdownLocations := []Location{
 		{
 			Path:  "internal/index/helper.go",
 			Range: newRange(78, 6, 78, 16),
@@ -198,7 +198,7 @@ func TestDatabaseMonikerResults(t *testing.T) {
 		identifier         string
 		skip               int
 		take               int
-		expectedLocations  []InternalLocation
+		expectedLocations  []Location
 		expectedTotalCount int
 	}{
 		{"definitions", "gomod", "github.com/sourcegraph/lsif-go/protocol:Edge", 0, 100, edgeLocations, 10},

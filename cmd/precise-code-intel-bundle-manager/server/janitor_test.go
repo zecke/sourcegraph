@@ -28,12 +28,12 @@ func TestCleanFailedUploads(t *testing.T) {
 			}
 		}
 
-		s := &Server{
+		j := &Janitor{
 			bundleDir:               bundleDir,
 			maxUnconvertedUploadAge: time.Minute,
 		}
 
-		if err := s.cleanFailedUploads(); err != nil {
+		if err := j.cleanFailedUploads(); err != nil {
 			t.Fatalf("unexpected error cleaning failed uploads: %s", err)
 		}
 
@@ -60,7 +60,7 @@ func TestRemoveDeadDumps(t *testing.T) {
 			}
 		}
 
-		s := &Server{
+		j := &Janitor{
 			bundleDir: bundleDir,
 		}
 
@@ -80,7 +80,7 @@ func TestRemoveDeadDumps(t *testing.T) {
 			}, nil
 		}
 
-		if err := s.removeDeadDumps(statesFn); err != nil {
+		if err := j.removeDeadDumps(statesFn); err != nil {
 			t.Fatalf("unexpected error removing dead dumps: %s", err)
 		}
 
@@ -113,7 +113,7 @@ func TestRemoveDeadDumpsMaxRequestBatchSize(t *testing.T) {
 			}
 		}
 
-		s := &Server{
+		j := &Janitor{
 			bundleDir: bundleDir,
 		}
 
@@ -130,7 +130,7 @@ func TestRemoveDeadDumpsMaxRequestBatchSize(t *testing.T) {
 			return states, nil
 		}
 
-		if err := s.removeDeadDumps(statesFn); err != nil {
+		if err := j.removeDeadDumps(statesFn); err != nil {
 			t.Fatalf("unexpected error removing dead dumps: %s", err)
 		}
 
@@ -187,11 +187,11 @@ func TestCleanOldDumpsStopsAfterFreeingDesiredSpace(t *testing.T) {
 			return int64(calls), true, nil
 		}
 
-		s := &Server{
+		j := &Janitor{
 			bundleDir: bundleDir,
 		}
 
-		if err := s.cleanOldDumps(pruneFn, 100); err != nil {
+		if err := j.cleanOldDumps(pruneFn, 100); err != nil {
 			t.Fatalf("unexpected error cleaning old dumps: %s", err)
 		}
 
@@ -239,11 +239,11 @@ func TestCleanOldDumpsStopsWithNoPrunableDatabases(t *testing.T) {
 			return int64(id), true, nil
 		}
 
-		s := &Server{
+		j := &Janitor{
 			bundleDir: bundleDir,
 		}
 
-		if err := s.cleanOldDumps(pruneFn, 100); err != nil {
+		if err := j.cleanOldDumps(pruneFn, 100); err != nil {
 			t.Fatalf("unexpected error cleaning old dumps: %s", err)
 		}
 
