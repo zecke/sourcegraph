@@ -4,76 +4,82 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/sourcegraph/sourcegraph/internal/env"
+	"github.com/sourcegraph/sourcegraph/internal/diskutil"
+	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 )
 
 type Server struct {
-	storageDir           string
-	databaseCache        *DatabaseCache
-	documentDataCache    *DocumentDataCache
-	resultChunkDataCache *ResultChunkDataCache
+	host                    string
+	port                    int
+	bundleDir               string
+	databaseCache           *DatabaseCache
+	documentDataCache       *DocumentDataCache
+	resultChunkDataCache    *ResultChunkDataCache
+	desiredPercentFree      int
+	diskSizer               diskutil.DiskSizer
+	maxUnconvertedUploadAge time.Duration
 }
 
-var (
-	DatabaseCacheSize        = env.Get("CONNECTION_CACHE_CAPACITY", "100", "number of SQLite connections that can be opened at once")
-	DocumentDataCacheSize    = env.Get("DOCUMENT_CACHE_CAPACITY", "100", "maximum number of decoded documents that can be held in memory at once")
-	ResultChunkDataCacheSize = env.Get("RESULT_CHUNK_CACHE_CAPACITY", "100", "maximum number of decoded result chunks that can be held in memory at once")
-)
+type ServerOpts struct {
+	Host                     string
+	Port                     int
+	BundleDir                string
+	DatabaseCacheSize        int
+	DocumentDataCacheSize    int
+	ResultChunkDataCacheSize int
+	DesiredPercentFree       int
+	MaxUnconvertedUploadAge  time.Duration
+}
 
-func New(storageDir string) (*Server, error) {
-
-	var databaseCacheSize int
-	if i, err := strconv.ParseInt(DatabaseCacheSize, 10, 64); err != nil {
-		log.Fatalf("invalid int %q for CONNECTION_CACHE_CAPACITY: %s", DatabaseCacheSize, err)
-	} else {
-		databaseCacheSize = int(i)
-	}
-
-	databaseCache, err := NewDatabaseCache(databaseCacheSize)
+func New(opts ServerOpts) (*Server, error) {
+	databaseCache, err := NewDatabaseCache(opts.DatabaseCacheSize)
 	if err != nil {
 		return nil, err
 	}
 
-	var documentDataCacheSize int
-	if i, err := strconv.ParseInt(DocumentDataCacheSize, 10, 64); err != nil {
-		log.Fatalf("invalid int %q for DOCUMENT_CACHE_CAPACITY: %s", DocumentDataCacheSize, err)
-	} else {
-		documentDataCacheSize = int(i)
-	}
-
-	documentDataCache, err := NewDocumentDataCache(documentDataCacheSize)
+	documentDataCache, err := NewDocumentDataCache(opts.DocumentDataCacheSize)
 	if err != nil {
 		return nil, err
 	}
 
-	var resultChunkDataCacheSize int
-	if i, err := strconv.ParseInt(ResultChunkDataCacheSize, 10, 64); err != nil {
-		log.Fatalf("invalid int %q for RESULT_CHUNK_CACHE_CAPACITY: %s", ResultChunkDataCacheSize, err)
-	} else {
-		resultChunkDataCacheSize = int(i)
-	}
-
-	resultChunkDataCache, err := NewResultChunkDataCache(resultChunkDataCacheSize)
+	resultChunkDataCache, err := NewResultChunkDataCache(opts.ResultChunkDataCacheSize)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Server{
-		storageDir:           storageDir,
-		databaseCache:        databaseCache,
-		documentDataCache:    documentDataCache,
-		resultChunkDataCache: resultChunkDataCache,
+		host:                    opts.Host,
+		port:                    opts.Port,
+		bundleDir:               opts.BundleDir,
+		databaseCache:           databaseCache,
+		documentDataCache:       documentDataCache,
+		resultChunkDataCache:    resultChunkDataCache,
+		desiredPercentFree:      opts.DesiredPercentFree,
+		maxUnconvertedUploadAge: opts.MaxUnconvertedUploadAge,
 	}, nil
 }
 
-func (s *Server) Handler() http.Handler {
+func (s *Server) Start() error {
+	addr := net.JoinHostPort(s.host, strconv.FormatInt(int64(s.port), 10))
+	handler := ot.Middleware(s.handler())
+	server := &http.Server{Addr: addr, Handler: handler}
+
+	if err := server.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Server) handler() http.Handler {
 	mux := mux.NewRouter()
 	mux.Path("/uploads/{id:[0-9]+}").Methods("GET").HandlerFunc(s.handleGetUpload)
 	mux.Path("/uploads/{id:[0-9]+}").Methods("POST").HandlerFunc(s.handlePostUpload)
@@ -305,11 +311,11 @@ func (s *Server) withDatabase(r *http.Request, handler func(db *Database) error)
 }
 
 func (s *Server) uploadFilename(id int64) string {
-	return filepath.Join(s.storageDir, "uploads", fmt.Sprintf("%d.lsif.gz", id))
+	return filepath.Join(s.bundleDir, "uploads", fmt.Sprintf("%d.lsif.gz", id))
 }
 
 func (s *Server) dbFilename(id int64) string {
-	return filepath.Join(s.storageDir, "dbs", fmt.Sprintf("%d.lsif.db", id))
+	return filepath.Join(s.bundleDir, "dbs", fmt.Sprintf("%d.lsif.db", id))
 }
 
 func idFromRequest(r *http.Request) int64 {

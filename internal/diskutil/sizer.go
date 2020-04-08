@@ -12,7 +12,7 @@ type DiskSizer interface {
 	MountPoint() string
 
 	// Size returns the total and available size of a disk in bytes.
-	Size() (total uint64, available uint64, err error)
+	Size() (diskSizeBytes uint64, freeBytes uint64, err error)
 }
 
 type statDiskSizer struct {
