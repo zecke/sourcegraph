@@ -1,17 +1,15 @@
 package server
 
-import "github.com/prometheus/client_golang/prometheus"
+// func init() {
+// 	prometheus.MustRegister(bundlesRemoved)
+// }
 
-func init() {
-	prometheus.MustRegister(bundlesRemoved)
-}
-
-var bundlesRemoved = prometheus.NewCounter(prometheus.CounterOpts{
-	Namespace: "src",
-	Subsystem: "precise-code-intel-bundle-manager",
-	Name:      "bundles_removed",
-	Help:      "number of bundles removed during cleanup",
-})
+// var bundlesRemoved = prometheus.NewCounter(prometheus.CounterOpts{
+// 	Namespace: "src",
+// 	Subsystem: "precise-code-intel-bundle-manager",
+// 	Name:      "bundles_removed",
+// 	Help:      "number of bundles removed during cleanup",
+// })
 
 // var execRunning = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 // 	Namespace: "src",
