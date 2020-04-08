@@ -560,6 +560,7 @@ func (r *searchResolver) evaluateLeaf(ctx context.Context) (*SearchResultsResolv
 	// If the request is a paginated one, we handle it separately. See
 	// paginatedResults for more details.
 	if r.pagination != nil {
+		log15.Info("Returning paginated results")
 		return r.paginatedResults(ctx)
 	}
 
@@ -567,7 +568,6 @@ func (r *searchResolver) evaluateLeaf(ctx context.Context) (*SearchResultsResolv
 	if rr != nil {
 		r.logSearchLatency(ctx, rr.ElapsedMilliseconds())
 	}
-
 	// Record what type of response we sent back via Prometheus.
 	var status, alertType string
 	switch {

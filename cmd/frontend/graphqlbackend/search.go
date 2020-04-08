@@ -91,6 +91,8 @@ func NewSearchImplementer(args *SearchArgs) (SearchImplementer, error) {
 		if err != nil {
 			return alertForQuery(args.Query, err), nil
 		}
+		v := int32(30)
+		args.First = &v
 	} else {
 		queryInfo, err = query.Process(queryString, searchType)
 		if err != nil {
@@ -112,6 +114,7 @@ func NewSearchImplementer(args *SearchArgs) (SearchImplementer, error) {
 			cursor: cursor,
 			limit:  *args.First,
 		}
+		log15.Info("paginated active")
 	} else if args.After != nil {
 		return nil, errors.New("Search: paginated requests providing a 'after' but no 'first' is forbidden")
 	}
