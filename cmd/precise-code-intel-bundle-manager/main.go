@@ -45,8 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// TODO - add and register metrics
-	// bundleManager.RegisterMetrics()
 
 	handler := ot.Middleware(bundleManager.Handler())
 
@@ -63,7 +61,6 @@ func main() {
 		for {
 			_ = bundleManager.Janitor() // TODO - handle error
 			time.Sleep(interval)
-
 		}
 	}()
 

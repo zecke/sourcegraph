@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sourcegraph/sourcegraph/internal/codeintel/lsifserver/client"
+	"github.com/sourcegraph/sourcegraph/internal/diskutil"
 	"github.com/sourcegraph/sourcegraph/internal/env"
 )
 
@@ -21,8 +23,47 @@ var (
 )
 
 func (s *Server) Janitor() error {
-	for _, task := range []func() error{s.removeDeadDumps, s.cleanOldDumps, s.cleanFailedUploads} {
+	diskSizer, err := diskutil.NewDiskSizer(s.storageDir)
+	if err != nil {
+		// TODO
+	}
+
+	diskSize, bytesFree, err := diskSizer.Size()
+	if err != nil {
+		// TODO
+	}
+
+	// TODO
+	fmt.Printf("Size: %d\nBytes free: %d\n", diskSize, bytesFree)
+
+	for _, task := range []func() error{s.cleanFailedUploads, s.removeDeadDumps, s.cleanOldDumps} {
 		if err := task(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) cleanFailedUploads() error {
+	var maxAge time.Duration
+	if i, err := strconv.ParseInt(FailedUploadMaxAge, 10, 64); err != nil {
+		log.Fatalf("invalid int %q for FAILED_UPLOAD_MAX_AGE: %s", FailedUploadMaxAge, err)
+	} else {
+		maxAge = time.Duration(i) * time.Second
+	}
+
+	fileInfos, err := ioutil.ReadDir(filepath.Join(s.storageDir, "uploads"))
+	if err != nil {
+		return err
+	}
+
+	for _, fileInfo := range fileInfos {
+		if time.Since(fileInfo.ModTime()) < maxAge {
+			continue
+		}
+
+		if err := os.Remove(filepath.Join(s.storageDir, "uploads", fileInfo.Name())); err != nil {
 			return err
 		}
 	}
@@ -121,32 +162,6 @@ func (s *Server) removeDeadDumps() error {
 			if err := os.Remove(path); err != nil {
 				return err
 			}
-		}
-	}
-
-	return nil
-}
-
-func (s *Server) cleanFailedUploads() error {
-	var maxAge time.Duration
-	if i, err := strconv.ParseInt(FailedUploadMaxAge, 10, 64); err != nil {
-		log.Fatalf("invalid int %q for FAILED_UPLOAD_MAX_AGE: %s", FailedUploadMaxAge, err)
-	} else {
-		maxAge = time.Duration(i) * time.Second
-	}
-
-	fileInfos, err := ioutil.ReadDir(filepath.Join(s.storageDir, "uploads"))
-	if err != nil {
-		return err
-	}
-
-	for _, fileInfo := range fileInfos {
-		if time.Since(fileInfo.ModTime()) < maxAge {
-			continue
-		}
-
-		if err := os.Remove(filepath.Join(s.storageDir, "uploads", fileInfo.Name())); err != nil {
-			return err
 		}
 	}
 
