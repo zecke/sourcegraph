@@ -23,8 +23,7 @@ type Janitor struct {
 	desiredPercentFree      int
 	janitorInterval         time.Duration
 	maxUnconvertedUploadAge time.Duration
-
-	diskSizer diskutil.DiskSizer // lazily initiailized
+	diskSizer               diskutil.DiskSizer // lazily initialized
 }
 
 type JanitorOpts struct {
