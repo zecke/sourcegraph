@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestFindMountPoint(t *testing.T) {
+func Test_findMountPoint(t *testing.T) {
 	type args struct {
 		d string
 	}
@@ -24,13 +24,13 @@ func TestFindMountPoint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := FindMountPoint(tt.args.d)
+			got, err := findMountPoint(tt.args.d)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("FindMountPoint() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("findMountPoint() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if got != tt.want {
-				t.Errorf("FindMountPoint() = %v, want %v", got, tt.want)
+				t.Errorf("findMountPoint() = %v, want %v", got, tt.want)
 			}
 		})
 	}

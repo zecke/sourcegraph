@@ -8,26 +8,39 @@ import (
 
 // DiskSizer gets information about disk size and free space.
 type DiskSizer interface {
-	BytesFreeOnDisk(mountPoint string) (uint64, error)
-	DiskSizeBytes(mountPoint string) (uint64, error)
+	// MountPoint returns the root of the device.
+	MountPoint() string
+
+	// Size returns the total and available size of a disk in bytes.
+	Size() (total uint64, available uint64, err error)
 }
 
-type StatDiskSizer struct{}
-
-func (s *StatDiskSizer) BytesFreeOnDisk(mountPoint string) (uint64, error) {
-	var fs syscall.Statfs_t
-	if err := syscall.Statfs(mountPoint, &fs); err != nil {
-		return 0, errors.Wrap(err, "statting")
-	}
-	free := fs.Bavail * uint64(fs.Bsize)
-	return free, nil
+type statDiskSizer struct {
+	mountPoint string
 }
 
-func (s *StatDiskSizer) DiskSizeBytes(mountPoint string) (uint64, error) {
-	var fs syscall.Statfs_t
-	if err := syscall.Statfs(mountPoint, &fs); err != nil {
-		return 0, errors.Wrap(err, "statting")
+// NewDiskSizer creates a DiskSizer for the mount point containing
+// directory d.
+func NewDiskSizer(d string) (DiskSizer, error) {
+	mountPoint, err := findMountPoint(d)
+	if err != nil {
+		return nil, err
 	}
-	free := fs.Blocks * uint64(fs.Bsize)
-	return free, nil
+
+	return statDiskSizer{
+		mountPoint: mountPoint,
+	}, nil
+}
+
+func (s statDiskSizer) MountPoint() string {
+	return s.mountPoint
+}
+
+func (s statDiskSizer) Size() (uint64, uint64, error) {
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(s.mountPoint, &fs); err != nil {
+		return 0, 0, errors.Wrap(err, "statting")
+	}
+
+	return fs.Blocks * uint64(fs.Bsize), fs.Bavail * uint64(fs.Bsize), nil
 }

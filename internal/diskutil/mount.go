@@ -9,12 +9,13 @@ import (
 	"github.com/pkg/errors"
 )
 
-// FindMountPoint searches upwards starting from the directory d to find the mount point.
-func FindMountPoint(d string) (string, error) {
+// findMountPoint searches upwards starting from the directory d to find the mount point.
+func findMountPoint(d string) (string, error) {
 	d, err := filepath.Abs(d)
 	if err != nil {
 		return "", errors.Wrapf(err, "getting absolute version of %s", d)
 	}
+
 	for {
 		m, err := isMount(d)
 		if err != nil {
@@ -23,11 +24,12 @@ func FindMountPoint(d string) (string, error) {
 		if m {
 			return d, nil
 		}
-		d2 := filepath.Dir(d)
-		if d2 == d {
-			return d2, nil
+
+		parent := filepath.Dir(d)
+		if parent == d {
+			return parent, nil
 		}
-		d = d2
+		d = parent
 	}
 }
 
@@ -35,16 +37,21 @@ func FindMountPoint(d string) (string, error) {
 func isMount(d string) (bool, error) {
 	ddev, err := device(d)
 	if err != nil {
-		return false, errors.Wrapf(err, "gettting device id for %s", d)
+		return false, errors.Wrapf(err, "getting device id for %s", d)
 	}
+
 	parent := filepath.Dir(d)
 	if parent == d {
+		// root of filesystem
 		return true, nil
 	}
+
 	pdev, err := device(parent)
 	if err != nil {
 		return false, errors.Wrapf(err, "getting device id for %s", parent)
 	}
+
+	// root of device
 	return pdev != ddev, nil
 }
 

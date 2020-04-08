@@ -410,16 +410,16 @@ func Test_howManyBytesToFree(t *testing.T) {
 }
 
 type fakeDiskSizer struct {
-	bytesFree uint64
 	diskSize  uint64
+	bytesFree uint64
 }
 
-func (f *fakeDiskSizer) BytesFreeOnDisk(mountPoint string) (uint64, error) {
-	return f.bytesFree, nil
+func (f *fakeDiskSizer) MountPoint() string {
+	return ""
 }
 
-func (f *fakeDiskSizer) DiskSizeBytes(mountPoint string) (uint64, error) {
-	return f.diskSize, nil
+func (f *fakeDiskSizer) Size() (uint64, uint64, error) {
+	return f.diskSize, f.bytesFree, nil
 }
 
 func tmpDir(t *testing.T) (string, func()) {
