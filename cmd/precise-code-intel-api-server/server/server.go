@@ -135,6 +135,8 @@ func (s *Server) handleGetUploadByID(w http.ResponseWriter, r *http.Request) {
 		RepositoryID      int        `json:"repositoryId"`
 		Indexer           string     `json:"indexer"`
 		Rank              *int       `json:"placeInQueue"`
+		// TODO - add this as an optional field
+		// ProcessedAt       time.Time  `json:"processedAt"`
 	}{}
 
 	if err := row.Scan(
@@ -330,7 +332,6 @@ func (s *Server) handleGetUploadsByRepo(w http.ResponseWriter, r *http.Request) 
 			&upload.Indexer,
 			&upload.Rank,
 		); err != nil {
-
 			fmt.Printf("WHOOPS: %s\n", err)
 			http.Error(w, "", http.StatusInternalServerError)
 			return
@@ -435,7 +436,7 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		indexerName = meta.ToolInfo.Name
 	}
 
-	tracingContext := "" // TODO
+	tracingContext := "{}" // TODO
 
 	var id int
 	if err := dbutil.Transaction(context.Background(), s.db, func(tx *sql.Tx) error {
@@ -467,7 +468,7 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("bad stauts %d", resp.StatusCode)
+			return fmt.Errorf("bad status %d", resp.StatusCode)
 		}
 
 		return nil
@@ -481,24 +482,657 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(fmt.Sprintf(`{"id": %d}`, id)))
 }
 
+type Dump struct {
+	ID                int        `json:"id"`
+	Commit            string     `json:"commit"`
+	Root              string     `json:"root"`
+	VisibleAtTip      bool       `json:"visibleAtTip"`
+	UploadedAt        time.Time  `json:"uploadedAt"`
+	State             string     `json:"state"`
+	FailureSummary    *string    `json:"failureSummary"`
+	FailureStacktrace *string    `json:"failureStacktrace"`
+	StartedAt         *time.Time `json:"startedAt"`
+	FinishedAt        *time.Time `json:"finishedAt"`
+	TracingContext    string     `json:"tracingContext"`
+	RepositoryID      int        `json:"repositoryId"`
+	Indexer           string     `json:"indexer"`
+	// TODO
+	// ProcessedAt       time.Time  `json:"processedAt"`
+}
+
+func (s *Server) findClosestDatabase(repositoryID int, commit, file string) ([]Dump, error) {
+	query := "WITH " + bidirectionalLineage + ", " + visibleDumps + `
+		SELECT d.dump_id FROM lineage_with_dumps d
+		WHERE $3 LIKE (d.root || '%') AND d.dump_id IN (SELECT * FROM visible_ids)
+		ORDER BY d.n
+	`
+	rows, err := s.db.QueryContext(context.Background(), query, repositoryID, commit, file)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var qs []*sqlf.Query
+	for rows.Next() {
+		var id int
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+
+		qs = append(qs, sqlf.Sprintf("%d", id))
+	}
+
+	query2 := sqlf.Sprintf(`SELECT
+		u.id,
+		u.commit,
+		u.root,
+		u.visible_at_tip,
+		u.uploaded_at,
+		u.state,
+		u.failure_summary,
+		u.failure_stacktrace,
+		u.started_at,
+		u.finished_at,
+		u.tracing_context,
+		u.repository_id,
+		u.indexer
+	FROM lsif_uploads u WHERE id IN (%s)`, sqlf.Join(qs, ", "))
+
+	rows2, err := s.db.QueryContext(context.Background(), query2.Query(sqlf.PostgresBindVar), query2.Args()...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+
+	var dumps []Dump
+	for rows2.Next() {
+		dump := Dump{}
+		if err := rows2.Scan(
+			&dump.ID,
+			&dump.Commit,
+			&dump.Root,
+			&dump.VisibleAtTip,
+			&dump.UploadedAt,
+			&dump.State,
+			&dump.FailureSummary,
+			&dump.FailureStacktrace,
+			&dump.StartedAt,
+			&dump.FinishedAt,
+			&dump.TracingContext,
+			&dump.RepositoryID,
+			&dump.Indexer,
+		); err != nil {
+			return nil, err
+		}
+
+		db := Database{
+			bundleManagerURL: s.bundleManagerURL,
+			dumpID:           dump.ID,
+		}
+
+		// TODO - do these requests in parallel
+		exists, err := db.Exists(pathToRoot(dump.Root, file))
+		if err != nil {
+			return nil, err
+		}
+
+		if exists {
+			// TODO - need to de-duplicate
+			dumps = append(dumps, dump)
+		}
+	}
+
+	return dumps, nil
+}
+
+func pathToRoot(root, file string) string {
+	if strings.HasPrefix(file, root) {
+		return strings.TrimPrefix(file, root)
+	}
+	return file
+}
+
 // GET /exists
 func (s *Server) handleExists(w http.ResponseWriter, r *http.Request) {
-	panic("unimplemented") // TODO
+	q := r.URL.Query()
+	repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
+	commit := q.Get("commit")
+	file := q.Get("path")
+
+	fmt.Printf("EXISTS\n")
+	dumps, err := s.findClosestDatabase(repositoryID, commit, file)
+	fmt.Printf("Dumps: %#v\n", dumps)
+	fmt.Printf("Err: %#v\n", err)
+	if err != nil {
+		fmt.Printf("WHOOPSRRRRR: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	rrr, err := json.Marshal(map[string]interface{}{"uploads": dumps})
+	fmt.Printf("OK HERES UR DUMPS: %s\n\n\n\n", rrr)
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"uploads": dumps})
+}
+
+func (s *Server) lookupMoniker(dumpID int, path string, moniker MonikerData, model string, skip, take *int) ([]Location, int, error) {
+	if moniker.PackageInformationID == "" {
+		return nil, 0, nil
+	}
+
+	db := Database{
+		dumpID:           dumpID,
+		bundleManagerURL: s.bundleManagerURL,
+	}
+	pid, err := db.PackageInformation(path, moniker.PackageInformationID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	dump, exists, err := s.getPackage(moniker.Scheme, pid.Name, pid.Version)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !exists {
+		return nil, 0, nil
+	}
+
+	db2 := Database{
+		dumpID:           dump.ID,
+		bundleManagerURL: s.bundleManagerURL,
+	}
+	return db2.MonikerResults(model, moniker.Scheme, moniker.Identifier, skip, take)
+}
+
+func (s *Server) getPackage(scheme, name, version string) (Dump, bool, error) {
+	query := `
+		SELECT
+			u.id,
+			u.commit,
+			u.root,
+			u.visible_at_tip,
+			u.uploaded_at,
+			u.state,
+			u.failure_summary,
+			u.failure_stacktrace,
+			u.started_at,
+			u.finished_at,
+			u.tracing_context,
+			u.repository_id,
+			u.indexer
+		FROM lsif_packages p
+		JOIN lsif_uploads u ON p.dump_id = u.id
+		WHERE p.scheme = $1 AND p.name = $2 AND p.version = $3
+		LIMIT 1
+	`
+
+	dump := Dump{}
+	if err := s.db.QueryRowContext(context.Background(), query, scheme, name, version).Scan(
+		&dump.ID,
+		&dump.Commit,
+		&dump.Root,
+		&dump.VisibleAtTip,
+		&dump.UploadedAt,
+		&dump.State,
+		&dump.FailureSummary,
+		&dump.FailureStacktrace,
+		&dump.StartedAt,
+		&dump.FinishedAt,
+		&dump.TracingContext,
+		&dump.RepositoryID,
+		&dump.Indexer,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return Dump{}, false, nil
+		}
+
+		return Dump{}, false, err
+	}
+
+	return dump, false, nil
+}
+
+func (s *Server) getDefs(dump Dump, db Database, pathInDb string, line, character int) ([]LocationThingers, error) {
+	locations, err := db.Definitions(pathInDb, line, character)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(locations) > 0 {
+		return s.resolveLocations(dump.Root, locations), nil
+	}
+
+	rangeMonikers, err := db.MonikersByPosition(pathInDb, line, character)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, monikers := range rangeMonikers {
+		for _, moniker := range monikers {
+			if moniker.Kind == "import" {
+				results, _, err := s.lookupMoniker(dump.ID, pathInDb, moniker, "definition", nil, nil)
+				if err != nil {
+					return nil, err
+				}
+
+				x := s.resolveLocations(dump.Root, results)
+				if len(x) > 0 {
+					return x, nil
+				}
+			} else {
+				// This symbol was not imported from another database. We search the definitions
+				// table of our own database in case there was a definition that wasn't properly
+				// attached to a result set but did have the correct monikers attached.
+
+				results, _, err := db.MonikerResults("definition", moniker.Scheme, moniker.Identifier, nil, nil)
+				if err != nil {
+					return nil, err
+				}
+
+				x := s.resolveLocations(dump.Root, results)
+				if len(x) > 0 {
+					return x, nil
+				}
+			}
+		}
+	}
+
+	return nil, nil
 }
 
 // GET /definitions
 func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
-	panic("unimplemented") // TODO
+	q := r.URL.Query()
+	// repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
+	// commit := q.Get("commit")
+	file := q.Get("path")
+	line, _ := strconv.Atoi(q.Get("line"))
+	character, _ := strconv.Atoi(q.Get("character"))
+	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
+
+	dump, db, exists, err := s.getDumpAndDatabase(uploadID)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+
+	pathInDb := pathToDb(dump.Root, file)
+
+	defs, err := s.getDefs(dump, db, pathInDb, line, character)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	resolved, err := s.resolveLocations2(defs)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	var outers []struct {
+		RepositoryID int    `json:"repositoryId"`
+		Commit       string `json:"commit"`
+		Path         string `json:"path"`
+		Range        Range  `json:"range"`
+	}
+	for _, res := range resolved {
+		outers = append(outers, struct {
+			RepositoryID int    `json:"repositoryId"`
+			Commit       string `json:"commit"`
+			Path         string `json:"path"`
+			Range        Range  `json:"range"`
+		}{
+			RepositoryID: res.Dump.RepositoryID,
+			Commit:       res.Dump.Commit,
+			Path:         res.Path,
+			Range:        res.Range,
+		})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"locations": outers})
+}
+
+type LocationThingers struct {
+	DumpID int    `json:"dumpId"`
+	Path   string `json:"path"`
+	Range  Range  `json:"Range"`
+}
+
+type LocationThingers2 struct {
+	Dump  Dump   `json:"dump"`
+	Path  string `json:"path"`
+	Range Range  `json:"range"`
+}
+
+func (s *Server) resolveLocations(root string, locations []Location) []LocationThingers {
+	var thingers []LocationThingers
+	for _, location := range locations {
+		thingers = append(thingers, LocationThingers{
+			DumpID: location.DumpID,
+			Path:   root + location.Path,
+			Range:  location.Range,
+		})
+	}
+
+	return thingers
+}
+
+func (s *Server) resolveLocations2(locations []LocationThingers) ([]LocationThingers2, error) {
+	var thingers []LocationThingers2
+
+	uniq := map[int]struct{}{}
+	for _, l := range locations {
+		uniq[l.DumpID] = struct{}{}
+	}
+
+	var qs []*sqlf.Query
+	for id := range uniq {
+		qs = append(qs, sqlf.Sprintf("%d", id))
+	}
+
+	query2 := sqlf.Sprintf(`SELECT
+		u.id,
+		u.commit,
+		u.root,
+		u.visible_at_tip,
+		u.uploaded_at,
+		u.state,
+		u.failure_summary,
+		u.failure_stacktrace,
+		u.started_at,
+		u.finished_at,
+		u.tracing_context,
+		u.repository_id,
+		u.indexer
+	FROM lsif_uploads u WHERE id IN (%s)`, sqlf.Join(qs, ", "))
+
+	rows2, err := s.db.QueryContext(context.Background(), query2.Query(sqlf.PostgresBindVar), query2.Args()...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+
+	dumpsByID := map[int]Dump{}
+	for rows2.Next() {
+		dump := Dump{}
+		if err := rows2.Scan(
+			&dump.ID,
+			&dump.Commit,
+			&dump.Root,
+			&dump.VisibleAtTip,
+			&dump.UploadedAt,
+			&dump.State,
+			&dump.FailureSummary,
+			&dump.FailureStacktrace,
+			&dump.StartedAt,
+			&dump.FinishedAt,
+			&dump.TracingContext,
+			&dump.RepositoryID,
+			&dump.Indexer,
+		); err != nil {
+			return nil, err
+		}
+
+		dumpsByID[dump.ID] = dump
+	}
+
+	for _, location := range locations {
+		thingers = append(thingers, LocationThingers2{
+			Dump:  dumpsByID[location.DumpID],
+			Path:  location.Path,
+			Range: location.Range,
+		})
+	}
+
+	return thingers, nil
+}
+
+// TODO - cursor t'ain't no string
+func (s *Server) handlePagination(w http.ResponseWriter, repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) {
+	// TODO - get resolved
+
+	var outers []struct {
+		RepositoryID int    `json:"repositoryId"`
+		Commit       string `json:"commit"`
+		Path         string `json:"path"`
+		Range        Range  `json:"range"`
+	}
+	for _, res := range resolved {
+		outers = append(outers, struct {
+			RepositoryID int    `json:"repositoryId"`
+			Commit       string `json:"commit"`
+			Path         string `json:"path"`
+			Range        Range  `json:"range"`
+		}{
+			RepositoryID: res.Dump.RepositoryID,
+			Commit:       res.Dump.Commit,
+			Path:         res.Path,
+			Range:        res.Range,
+		})
+	}
+
+	// TODO - encode cursor
+	// TODO - link header
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"locations": outers})
+}
+
+type Cursor struct {
+	Phase       string
+	DumpID      int
+	Path        string
+	Line        int
+	Character   int
+	Monikers    []MonikerData
+	SkipResults int
+
+	// TODO - other thingers
+}
+
+func decodeCursor(raw string) (Cursor, error) {
+	return Cursor{}, fmt.Errorf("Unimplemented") // TODO
+}
+
+func encodeCursor(cursor Cursor) string {
+	return "" // TODO
 }
 
 // GET /references
 func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
-	panic("unimplemented") // TODO
+	q := r.URL.Query()
+	repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
+	commit := q.Get("commit")
+	file := q.Get("path")
+	line, _ := strconv.Atoi(q.Get("line"))
+	character, _ := strconv.Atoi(q.Get("character"))
+	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	cursor := q.Get("cursor")
+
+	if cursor != "" {
+		realCursor, err := decodeCursor(cursor)
+		if err != nil {
+			fmt.Printf("WHOOPS: %s\n", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+
+		s.handlePagination(w, repositoryID, commit, 20, limit, realCursor)
+		return
+	} else {
+		dump, db, exists, err := s.getDumpAndDatabase(uploadID)
+		if err != nil {
+			fmt.Printf("WHOOPS: %s\n", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.Error(w, "", http.StatusNotFound)
+			return
+		}
+
+		pathInDb := pathToDb(dump.Root, file)
+
+		rangeMonikers, err := db.MonikersByPosition(pathInDb, line, character)
+		if err != nil {
+			fmt.Printf("WHOOPS: %s\n", err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+
+		var flattened []MonikerData
+		for _, monikers := range rangeMonikers {
+			flattened = append(flattened, monikers...)
+		}
+
+		newCursor := Cursor{
+			Phase:       "same-dump",
+			DumpID:      dump.ID,
+			Path:        pathInDb,
+			Line:        line,
+			Character:   character,
+			Monikers:    flattened,
+			SkipResults: 0,
+		}
+
+		s.handlePagination(w, repositoryID, commit, 20, limit, newCursor)
+		return
+	}
+}
+
+func (s *Server) getDumpAndDatabase(uploadID int) (Dump, Database, bool, error) {
+	query := sqlf.Sprintf(`
+	SELECT
+		u.id,
+		u.commit,
+		u.root,
+		u.visible_at_tip,
+		u.uploaded_at,
+		u.state,
+		u.failure_summary,
+		u.failure_stacktrace,
+		u.started_at,
+		u.finished_at,
+		u.tracing_context,
+		u.repository_id,
+		u.indexer
+	FROM lsif_uploads u WHERE id = %d
+`, uploadID)
+
+	var dump Dump
+	if err := s.db.QueryRowContext(context.Background(), query.Query(sqlf.PostgresBindVar), query.Args()...).Scan(
+		&dump.ID,
+		&dump.Commit,
+		&dump.Root,
+		&dump.VisibleAtTip,
+		&dump.UploadedAt,
+		&dump.State,
+		&dump.FailureSummary,
+		&dump.FailureStacktrace,
+		&dump.StartedAt,
+		&dump.FinishedAt,
+		&dump.TracingContext,
+		&dump.RepositoryID,
+		&dump.Indexer,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return Dump{}, Database{}, false, nil
+		}
+		return Dump{}, Database{}, false, err
+	}
+
+	db := Database{
+		bundleManagerURL: s.bundleManagerURL,
+		dumpID:           dump.ID,
+	}
+
+	return dump, db, true, nil
 }
 
 // GET /hover
 func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
-	panic("unimplemented") // TODO
+	q := r.URL.Query()
+	// repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
+	// commit := q.Get("commit")
+	file := q.Get("path")
+	line, _ := strconv.Atoi(q.Get("line"))
+	character, _ := strconv.Atoi(q.Get("character"))
+	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
+
+	dump, db, exists, err := s.getDumpAndDatabase(uploadID)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "", http.StatusNotFound)
+		return
+	}
+
+	pathx := pathToDb(dump.Root, file)
+	text, rn, exists, err := db.Hover(pathx, line, character)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"text": text, "range": rn})
+		return
+	}
+
+	defs, err := s.getDefs(dump, db, pathx, line, character)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	resolved, err := s.resolveLocations2(defs)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	if len(resolved) == 0 {
+		_ = json.NewEncoder(w).Encode(nil)
+		return
+	}
+
+	db2 := Database{
+		dumpID:           resolved[0].Dump.ID,
+		bundleManagerURL: s.bundleManagerURL,
+	}
+
+	p := pathToDb(resolved[0].Dump.Root, resolved[0].Path)
+	text, rn, exists, err = db2.Hover(p, resolved[0].Range.Start.Line, resolved[0].Range.Start.Character)
+	if err != nil {
+		fmt.Printf("WHOOPS: %s\n", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if exists {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"text": text, "range": rn})
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(nil)
+	return
+}
+
+func pathToDb(root, path string) string {
+	if strings.HasPrefix(path, root) {
+		return strings.TrimPrefix(path, root)
+	}
+	return path
 }
 
 // POST /uploads
@@ -542,7 +1176,12 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		states[id] = state
 	}
 
-	_ = json.NewEncoder(w).Encode(states)
+	pairs := []interface{}{}
+	for k, v := range states {
+		pairs = append(pairs, []interface{}{k, v})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{"type": "map", "value": pairs})
 }
 
 // POST /prune
@@ -633,3 +1272,154 @@ var lineageWithDumps = fmt.Sprintf(`
 		JOIN lsif_dumps d ON d.repository_id = a.repository_id AND d."commit" = a."commit"
 	)
 `, MaxTraversalLimit)
+
+//
+//
+//
+
+type Location struct {
+	DumpID int    `json:"dumpId"`
+	Path   string `json:"path"`
+	Range  Range  `json:"range"`
+}
+
+type Range struct {
+	Start Position `json:"start"`
+	End   Position `json:"end"`
+}
+
+type Position struct {
+	Line      int `json:"line"`
+	Character int `json:"character"`
+}
+
+type Database struct {
+	bundleManagerURL string
+	dumpID           int
+}
+
+func (d *Database) Exists(path string) (exists bool, err error) {
+	err = d.request("exists", url.Values{"path": []string{path}}, &exists)
+	return
+}
+
+func (d *Database) Definitions(path string, line, character int) ([]Location, error) {
+	var locations []Location
+	err := d.request("definitions", url.Values{"path": []string{path}, "line": []string{fmt.Sprintf("%d", line)}, "character": []string{fmt.Sprintf("%d", character)}}, &locations)
+	if err != nil {
+		return nil, err
+	}
+	for i := range locations {
+		locations[i].DumpID = d.dumpID
+	}
+	return locations, nil
+}
+
+func (d *Database) References(path string, line, character int) ([]Location, error) {
+	var locations []Location
+	err := d.request("references", url.Values{"path": []string{path}, "line": []string{fmt.Sprintf("%d", line)}, "character": []string{fmt.Sprintf("%d", character)}}, &locations)
+	if err != nil {
+		return nil, err
+	}
+	for i := range locations {
+		locations[i].DumpID = d.dumpID
+	}
+	return locations, nil
+}
+
+func (d *Database) Hover(path string, line, character int) (text string, r Range, exists bool, err error) {
+	var target json.RawMessage
+	err = d.request("hover", url.Values{"path": []string{path}, "line": []string{fmt.Sprintf("%d", line)}, "character": []string{fmt.Sprintf("%d", character)}}, &target)
+
+	if string(target) == "null" {
+		exists = false
+		return
+	}
+	exists = true
+
+	payload := struct {
+		Text  string `json:"text"`
+		Range Range  `json:"range"`
+	}{}
+	err = json.Unmarshal(target, &payload)
+	text = payload.Text
+	r = payload.Range
+	return
+}
+
+type MonikerData struct {
+	Kind                 string `json:"kind"`
+	Scheme               string `json:"scheme"`
+	Identifier           string `json:"identifier"`
+	PackageInformationID string `json:"packageInformationID"`
+}
+
+func (d *Database) MonikersByPosition(path string, line, character int) (target [][]MonikerData, err error) {
+	err = d.request("monikersByPosition", url.Values{"path": []string{path}, "line": []string{fmt.Sprintf("%d", line)}, "character": []string{fmt.Sprintf("%d", character)}}, &target)
+	return
+}
+
+func (d *Database) MonikerResults(modelType, scheme, identifier string, skip, take *int) (locations []Location, count int, err error) {
+	target := struct {
+		Locations []Location `json:"locations"`
+		Count     int        `json:"count"`
+	}{}
+
+	vars := url.Values{
+		"modelType":  []string{modelType},
+		"scheme":     []string{scheme},
+		"identifier": []string{identifier},
+	}
+	if skip != nil {
+		vars["skip"] = []string{fmt.Sprintf("%d", *skip)}
+	}
+	if take != nil {
+		vars["take"] = []string{fmt.Sprintf("%d", *take)}
+	}
+
+	if err = d.request("monikerReults", vars, &target); err != nil {
+		return
+	}
+
+	locations = target.Locations
+	count = target.Count
+	for i := range locations {
+		locations[i].DumpID = d.dumpID
+	}
+	return
+}
+
+type PackageInformationData struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func (d *Database) PackageInformation(path, packageInformationId string) (target PackageInformationData, err error) {
+	err = d.request("packageInformation", url.Values{"path": []string{path}, "packageInformationId": []string{packageInformationId}}, &target)
+	return
+}
+
+func (d *Database) request(path string, qs url.Values, target interface{}) error {
+	url, err := url.Parse(fmt.Sprintf("%s/dbs/%d/%s", d.bundleManagerURL, d.dumpID, path))
+	if err != nil {
+		return err
+	}
+	url.RawQuery = qs.Encode()
+
+	req, err := http.NewRequest("GET", url.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status %d", resp.StatusCode)
+	}
+
+	return json.NewDecoder(resp.Body).Decode(&target)
+}

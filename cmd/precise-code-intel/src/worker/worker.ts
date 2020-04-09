@@ -86,6 +86,8 @@ async function main(logger: Logger): Promise<void> {
                             pipeline(got.stream.get(url), fs.createWriteStream(sourcePath))
                         )
 
+                        console.log('My raw dump is at ', { sourcePath })
+
                         // Convert the database and populate the cross-dump package data
                         await convertDatabase(
                             entityManager,
