@@ -54,10 +54,7 @@ type Value struct {
 
 // Not returns whether the value is negated in the query (e.g., -value or -field:value).
 func (v *Value) Not() bool {
-	if v.syntax != nil {
-		return v.syntax.Not
-	}
-	return false
+	return v.syntax.Not
 }
 
 // Value returns the value as an interface{}.
