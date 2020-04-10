@@ -266,11 +266,57 @@ func ScanParameter(parameter []byte) Parameter {
 	return Parameter{Field: "", Value: string(parameter)}
 }
 
+func ScanSearchPatternHeuristic(buf []byte) (int, bool) {
+	var count, advance, balanced int
+	var r rune
+
+	next := func() {
+		r, advance = utf8.DecodeRune(buf)
+		count += advance
+		buf = buf[advance:]
+	}
+
+	for len(buf) > 0 {
+		next()
+		if r == '(' {
+			balanced += 1
+			continue
+		}
+		if r == ')' {
+			balanced -= 1
+			continue
+		}
+		if r != '\\' {
+			continue
+		}
+		if unicode.IsSpace(r) && balanced == 0 {
+			// Stop scanning a potential pattern when we see whitespace in a balanced state.
+			return count, true
+		}
+		// Handle escape sequence.
+		if len(buf[advance:]) > 0 {
+			next()
+			switch r {
+			case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '(', ')':
+				continue
+			default:
+				// Unrecognized escape sequence.
+				return count, false
+			}
+		} else {
+			// Unterminated escape sequence.
+			return count, false
+		}
+	}
+	return count, false
+}
+
 // ParseSearchPatternHeuristic heuristically parses a search pattern containing
 // parentheses at the current position. There are cases where we want to
 // interpret parentheses as part of a search pattern, rather than an and/or
 // expression group. For example, In the regex foo(a|b)bar, we want to preserve
 // parentheses as part of the pattern.
+
 func (p *parser) ParseSearchPatternHeuristic() (Node, bool) {
 	if !p.heuristic {
 		return Parameter{Field: "", Value: ""}, false
