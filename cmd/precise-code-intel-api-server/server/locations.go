@@ -1,5 +1,7 @@
 package server
 
+import "github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
+
 type LocationThingers struct {
 	DumpID int    `json:"dumpId"`
 	Path   string `json:"path"`
@@ -7,9 +9,9 @@ type LocationThingers struct {
 }
 
 type LocationThingers2 struct {
-	Dump  Dump   `json:"dump"`
-	Path  string `json:"path"`
-	Range Range  `json:"range"`
+	Dump  db.Dump `json:"dump"`
+	Path  string  `json:"path"`
+	Range Range   `json:"range"`
 }
 
 type Outer struct {
@@ -43,7 +45,7 @@ func (s *Server) resolveLocations2(locations []LocationThingers) ([]LocationThin
 		ids = append(ids, k)
 	}
 
-	dumpsByID, err := s.getDumps(ids)
+	dumpsByID, err := s.db.GetDumps(ids)
 	if err != nil {
 		return nil, err
 	}

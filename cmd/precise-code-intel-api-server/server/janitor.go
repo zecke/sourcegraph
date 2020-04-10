@@ -1,22 +1,20 @@
 package server
 
 import (
-	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/inconshreveable/log15"
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 )
 
-const StalledUploadMaxAge = time.Second * 5
-
 type Janitor struct {
-	db              *sql.DB
+	db              *db.DB
 	janitorInterval time.Duration
 }
 
 type JanitorOpts struct {
-	DB              *sql.DB
+	DB              *db.DB
 	JanitorInterval time.Duration
 }
 
@@ -38,7 +36,7 @@ func (j *Janitor) Start() {
 }
 
 func (j *Janitor) step() error {
-	ids, err := j.cleanOld()
+	ids, err := j.db.ResetStalled()
 	if err != nil {
 		return err
 	}

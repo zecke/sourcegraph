@@ -1,6 +1,10 @@
 package server
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
+)
 
 type PaginatedLocations struct {
 	locations []LocationThingers
@@ -144,7 +148,7 @@ func (s *Server) performSameDumpReferences(limit int, cursor Cursor) (PaginatedL
 	}
 
 	// Search the references table of the current dump. This search is necessary because
-	// we want a 'Find References' operation on a reference to also return references to
+	// we want a 'Finddb.References' operation on a reference to also return references to
 	// the governing definition, and those may not be fully linked in the LSIF data. This
 	// method returns a cursor if there are reference rows remaining for a subsequent page.
 	for _, moniker := range cursor.Monikers {
@@ -189,7 +193,7 @@ func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) (P
 
 		if len(locations) > 0 {
 			pl := PaginatedLocations{
-				// Dump already appended by lookupMoniker
+				//db.Dump already appended by lookupMoniker
 				locations: s.resolveLocations("", locations),
 			}
 
@@ -211,19 +215,19 @@ func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) (P
 }
 
 // TODO - perform transactionally
-func (s *Server) getSameRepoRemotePackageReferences(repositoryID int, commit, scheme, name, version, identifier string, limit, offset int) ([]Reference, int, int, error) {
-	visibleIDs, err := s.getVisibleIDs(repositoryID, commit)
+func (s *Server) getSameRepoRemotePackageReferences(repositoryID int, commit, scheme, name, version, identifier string, limit, offset int) ([]db.Reference, int, int, error) {
+	visibleIDs, err := s.db.GetVisibleIDs(repositoryID, commit)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
-	totalCount, err := s.countSameRepoPackageRefs(scheme, name, version, visibleIDs)
+	totalCount, err := s.db.CountSameRepoPackageRefs(scheme, name, version, visibleIDs)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
-	refs, newOffset, err := s.gatherPackageReferences(identifier, offset, limit, totalCount, func(offset int) ([]Reference, error) {
-		return s.getSameRepoPackageRefs(scheme, name, version, visibleIDs, offset, limit)
+	refs, newOffset, err := s.gatherPackageReferences(identifier, offset, limit, totalCount, func(offset int) ([]db.Reference, error) {
+		return s.db.GetSameRepoPackageRefs(scheme, name, version, visibleIDs, offset, limit)
 	})
 	if err != nil {
 		return nil, 0, 0, err
@@ -233,14 +237,14 @@ func (s *Server) getSameRepoRemotePackageReferences(repositoryID int, commit, sc
 }
 
 // TODO - perform transactionally
-func (s *Server) getPackageReferences(repositoryID int, scheme, name, version, identifier string, limit, offset int) ([]Reference, int, int, error) {
-	totalCount, err := s.countPackageRefs(scheme, name, version, repositoryID)
+func (s *Server) getPackageReferences(repositoryID int, scheme, name, version, identifier string, limit, offset int) ([]db.Reference, int, int, error) {
+	totalCount, err := s.db.CountPackageRefs(scheme, name, version, repositoryID)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
-	refs, newOffset, err := s.gatherPackageReferences(identifier, offset, limit, totalCount, func(offset int) ([]Reference, error) {
-		return s.getPackageRefs(scheme, name, version, repositoryID, limit, offset)
+	refs, newOffset, err := s.gatherPackageReferences(identifier, offset, limit, totalCount, func(offset int) ([]db.Reference, error) {
+		return s.db.GetPackageRefs(scheme, name, version, repositoryID, limit, offset)
 	})
 	if err != nil {
 		return nil, 0, 0, err
@@ -249,8 +253,8 @@ func (s *Server) getPackageReferences(repositoryID int, scheme, name, version, i
 	return refs, totalCount, newOffset, nil
 }
 
-func (s *Server) gatherPackageReferences(identifier string, offset, limit, totalCount int, pager func(offset int) ([]Reference, error)) ([]Reference, int, error) {
-	var refs []Reference
+func (s *Server) gatherPackageReferences(identifier string, offset, limit, totalCount int, pager func(offset int) ([]db.Reference, error)) ([]db.Reference, int, error) {
+	var refs []db.Reference
 	newOffset := offset
 
 	for len(refs) < limit && newOffset < totalCount {
@@ -273,12 +277,12 @@ func (s *Server) gatherPackageReferences(identifier string, offset, limit, total
 	return refs, newOffset, nil
 }
 
-func applyBloomFilter(refs []Reference, identifier string, limit int) ([]Reference, int) {
+func applyBloomFilter(refs []db.Reference, identifier string, limit int) ([]db.Reference, int) {
 	return refs, len(refs) // TODO - implement
 }
 
 func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) (PaginatedLocations, error) {
-	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]Reference, int, int, error) {
+	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
 		return s.getSameRepoRemotePackageReferences(
 			repositoryID,
 			commit,
@@ -293,7 +297,7 @@ func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit 
 }
 
 func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit int, cursor Cursor) (PaginatedLocations, error) {
-	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]Reference, int, int, error) {
+	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
 		return s.getPackageReferences(
 			repositoryID,
 			cursor.Scheme,
@@ -306,7 +310,7 @@ func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit in
 	})
 }
 
-func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier string, limit int, cursor Cursor, fx func() ([]Reference, int, int, error)) (PaginatedLocations, error) {
+func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier string, limit int, cursor Cursor, fx func() ([]db.Reference, int, int, error)) (PaginatedLocations, error) {
 	if len(cursor.DumpIDs) == 0 {
 		packageRefs, newOffset, totalCount, err := fx()
 		if err != nil {

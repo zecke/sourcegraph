@@ -1,15 +1,14 @@
 package main
 
 import (
-	"database/sql"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server"
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/db/dbutil"
 	"github.com/sourcegraph/sourcegraph/internal/debugserver"
 	"github.com/sourcegraph/sourcegraph/internal/env"
 	"github.com/sourcegraph/sourcegraph/internal/tracer"
@@ -50,7 +49,7 @@ func main() {
 	waitForSignal()
 }
 
-func mustInitializeDatabase() *sql.DB {
+func mustInitializeDatabase() *db.DB {
 	postgresDSN := conf.Get().ServiceConnections.PostgresDSN
 	conf.Watch(func() {
 		if newDSN := conf.Get().ServiceConnections.PostgresDSN; postgresDSN != newDSN {
@@ -58,7 +57,7 @@ func mustInitializeDatabase() *sql.DB {
 		}
 	})
 
-	db, err := dbutil.NewDB(postgresDSN, "precise-code-intel-api-server")
+	db, err := db.New(postgresDSN)
 	if err != nil {
 		log.Fatalf("failed to initialize db store: %s", err)
 	}

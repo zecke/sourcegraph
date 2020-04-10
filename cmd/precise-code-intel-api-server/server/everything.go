@@ -1,16 +1,21 @@
 package server
 
 import (
+	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 )
 
-func (s *Server) findClosestDatabase(repositoryID int, commit, file string) ([]Dump, error) {
-	candidates, err := s.findClosestDumps(repositoryID, commit, file)
+func (s *Server) findClosestDatabase(repositoryID int, commit, file string) ([]db.Dump, error) {
+	candidates, err := s.db.FindClosestDumps(repositoryID, commit, file)
 	if err != nil {
 		return nil, err
 	}
 
-	var dumps []Dump
+	var dumps []db.Dump
 	for _, dump := range candidates {
 		db := Database{
 			bundleManagerURL: s.bundleManagerURL,
@@ -45,7 +50,7 @@ func (s *Server) lookupMoniker(dumpID int, path string, moniker MonikerData, mod
 		return nil, 0, err
 	}
 
-	dump, exists, err := s.getPackage(moniker.Scheme, pid.Name, pid.Version)
+	dump, exists, err := s.db.GetPackage(moniker.Scheme, pid.Name, pid.Version)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -78,20 +83,45 @@ func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Curs
 	return s.handlePagination(repositoryID, commit, 20, limit, cursor)
 }
 
-func (s *Server) makeCursor(repositoryID int, commit, file string, line, character, uploadID int, limit int) (Cursor, bool, error) {
+var ErrMissingDump = fmt.Errorf("no dump")
+
+func (s *Server) decodeCursor(r *http.Request) (Cursor, error) {
+	q := r.URL.Query()
+	repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
+	commit := q.Get("commit")
+	file := q.Get("path")
+	line, _ := strconv.Atoi(q.Get("line"))
+	character, _ := strconv.Atoi(q.Get("character"))
+	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	encoded := q.Get("cursor")
+
+	if encoded != "" {
+		cursor, err := decodeCursor(encoded)
+		if err != nil {
+			return Cursor{}, err
+		}
+
+		return cursor, nil
+	}
+
+	return s.makeCursor(repositoryID, commit, file, line, character, uploadID, limit)
+}
+
+func (s *Server) makeCursor(repositoryID int, commit, file string, line, character, uploadID int, limit int) (Cursor, error) {
 	dump, db, exists, err := s.getDumpAndDatabase(uploadID)
 	if err != nil {
-		return Cursor{}, false, err
+		return Cursor{}, err
 	}
 	if !exists {
-		return Cursor{}, false, nil
+		return Cursor{}, ErrMissingDump
 	}
 
 	pathInDb := pathToDb(dump.Root, file)
 
 	rangeMonikers, err := db.MonikersByPosition(pathInDb, line, character)
 	if err != nil {
-		return Cursor{}, false, err
+		return Cursor{}, err
 	}
 
 	var flattened []MonikerData
@@ -109,27 +139,22 @@ func (s *Server) makeCursor(repositoryID int, commit, file string, line, charact
 		SkipResults: 0,
 	}
 
-	return newCursor, true, nil
+	return newCursor, nil
 }
 
-func (s *Server) getDefs(file string, line, character, uploadID int) ([]LocationThingers, bool, error) {
+func (s *Server) getDefs(file string, line, character, uploadID int) ([]LocationThingers, error) {
 	dump, db, exists, err := s.getDumpAndDatabase(uploadID)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if !exists {
-		return nil, false, nil
+		return nil, ErrMissingDump
 	}
 
-	defs, err := s.getDefsRaw(dump, db, pathToDb(dump.Root, file), line, character)
-	if err != nil {
-		return nil, false, err
-	}
-
-	return defs, true, nil
+	return s.getDefsRaw(dump, db, pathToDb(dump.Root, file), line, character)
 }
 
-func (s *Server) getDefsRaw(dump Dump, db Database, pathInDb string, line, character int) ([]LocationThingers, error) {
+func (s *Server) getDefsRaw(dump db.Dump, db Database, pathInDb string, line, character int) ([]LocationThingers, error) {
 	locations, err := db.Definitions(pathInDb, line, character)
 	if err != nil {
 		return nil, err
@@ -180,11 +205,10 @@ func (s *Server) getDefsRaw(dump Dump, db Database, pathInDb string, line, chara
 func (s *Server) getHover(file string, line, character, uploadID int) (string, Range, bool, error) {
 	dump, db, exists, err := s.getDumpAndDatabase(uploadID)
 	if err != nil {
-		// TODO - differentiate this from no hover
 		return "", Range{}, false, err
 	}
 	if !exists {
-		return "", Range{}, false, nil
+		return "", Range{}, false, ErrMissingDump
 	}
 
 	pathx := pathToDb(dump.Root, file)
@@ -235,13 +259,13 @@ func (s *Server) lookupPackageInformation(dumpID int, path string, moniker Monik
 	return pi, true, nil
 }
 
-func (s *Server) getDumpAndDatabase(uploadID int) (Dump, Database, bool, error) {
-	dump, exists, err := s.getDumpByID(uploadID)
+func (s *Server) getDumpAndDatabase(uploadID int) (db.Dump, Database, bool, error) {
+	dump, exists, err := s.db.GetDumpByID(uploadID)
 	if err != nil {
-		return Dump{}, Database{}, false, err
+		return db.Dump{}, Database{}, false, err
 	}
 	if !exists {
-		return Dump{}, Database{}, false, nil
+		return db.Dump{}, Database{}, false, nil
 	}
 
 	db := Database{

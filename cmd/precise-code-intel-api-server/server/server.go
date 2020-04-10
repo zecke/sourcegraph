@@ -1,9 +1,7 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,7 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/inconshreveable/log15"
-	"github.com/klauspost/compress/gzip"
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 	"github.com/tomnomnom/linkheader"
 )
@@ -27,14 +25,14 @@ type Server struct {
 	host             string
 	port             int
 	bundleManagerURL string
-	db               *sql.DB
+	db               *db.DB
 }
 
 type ServerOpts struct {
 	Host             string
 	Port             int
 	BundleManagerURL string
-	DB               *sql.DB
+	DB               *db.DB
 }
 
 func New(opts ServerOpts) *Server {
@@ -84,15 +82,14 @@ func (s *Server) handler() http.Handler {
 
 // GET /uploads/{id:[0-9]+}
 func (s *Server) handleGetUploadByID(w http.ResponseWriter, r *http.Request) {
-	upload, exists, err := s.getUploadByID(int(idFromRequest(r)))
+	upload, exists, err := s.db.GetUploadByID(int(idFromRequest(r)))
 	if err != nil {
 		log15.Error("Failed to retrieve upload", "error", err)
 		http.Error(w, fmt.Sprintf("failed to retrieve upload: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
-
 	if !exists {
-		http.Error(w, "", http.StatusNotFound)
+		http.Error(w, "upload not found", http.StatusNotFound)
 		return
 	}
 
@@ -101,14 +98,14 @@ func (s *Server) handleGetUploadByID(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /uploads/{id:[0-9]+}
 func (s *Server) handleDeleteUploadByID(w http.ResponseWriter, r *http.Request) {
-	found, err := s.deleteUploadByID(int(idFromRequest(r)))
+	exists, err := s.db.DeleteUploadByID(int(idFromRequest(r)))
 	if err != nil {
 		log15.Error("Failed to delete upload", "error", err)
 		http.Error(w, fmt.Sprintf("failed to delete upload: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
-	if !found {
-		http.Error(w, "", http.StatusNotFound)
+	if !exists {
+		http.Error(w, "upload not found", http.StatusNotFound)
 		return
 	}
 
@@ -117,7 +114,7 @@ func (s *Server) handleDeleteUploadByID(w http.ResponseWriter, r *http.Request) 
 
 // GET /uploads/repository/{id:[0-9]+}
 func (s *Server) handleGetUploadsByRepo(w http.ResponseWriter, r *http.Request) {
-	id := idFromRequest(r)
+	id := int(idFromRequest(r))
 	q := r.URL.Query()
 	term := q.Get("query")
 	state := q.Get("state")
@@ -128,14 +125,15 @@ func (s *Server) handleGetUploadsByRepo(w http.ResponseWriter, r *http.Request) 
 	}
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	uploads, count, err := s.getUploadsByRepo(int(id), state, term, visibleAtTip, limit, offset)
+	uploads, totalCount, err := s.db.GetUploadsByRepo(id, state, term, visibleAtTip, limit, offset)
 	if err != nil {
 		log15.Error("Failed to list uploads", "error", err)
 		http.Error(w, fmt.Sprintf("failed to list uploads: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	if offset+len(uploads) < count {
+	// TODO - update this
+	if offset+len(uploads) < totalCount {
 		q := r.URL.Query()
 		q.Set("limit", strconv.FormatInt(int64(limit), 10))
 		q.Set("offset", strconv.FormatInt(int64(offset+len(uploads)), 10))
@@ -147,12 +145,11 @@ func (s *Server) handleGetUploadsByRepo(w http.ResponseWriter, r *http.Request) 
 		w.Header().Set("Link", link.String())
 	}
 
-	writeJSON(w, map[string]interface{}{"uploads": uploads, "totalCount": count})
+	writeJSON(w, map[string]interface{}{"uploads": uploads, "totalCount": totalCount})
 }
 
 // POST /upload
 func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
-
 	q := r.URL.Query()
 	repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
 	commit := q.Get("commit")
@@ -178,14 +175,14 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	tracingContext := "{}"
 
 	if indexerName == "" {
-		indexerName, err = readIndexerName(f)
-		if err != nil {
-			// TODO - better error
-			panic("no indexer name")
+		if indexerName, err = readIndexerNameFromFile(f); err != nil {
+			log15.Error("Failed to read indexer name from upload", "error", err)
+			http.Error(w, fmt.Sprintf("failed to read indexer name from upload: %s", err.Error()), http.StatusInternalServerError)
+			return
 		}
 	}
 
-	id, err := s.enqueue(commit, root, tracingContext, repositoryID, indexerName, func(id int) error {
+	id, err := s.db.Enqueue(commit, root, tracingContext, repositoryID, indexerName, func(id int) error {
 		return sendUpload(s.bundleManagerURL, id, f)
 	})
 	if err != nil {
@@ -223,21 +220,22 @@ func (s *Server) handleDefinitions(w http.ResponseWriter, r *http.Request) {
 	character, _ := strconv.Atoi(q.Get("character"))
 	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
 
-	defs, ok, err := s.getDefs(file, line, character, uploadID)
+	defs, err := s.getDefs(file, line, character, uploadID)
 	if err != nil {
+		if err == ErrMissingDump {
+			http.Error(w, "no such dump", http.StatusNotFound)
+			return
+		}
+
 		log15.Error("Failed to handle definitions request", "error", err)
 		http.Error(w, fmt.Sprintf("failed to handle definitions request: %s", err.Error()), http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		http.Error(w, "", http.StatusNotFound)
 		return
 	}
 
 	outers, err := s.serializeLocations(defs)
 	if err != nil {
-		fmt.Printf("WHOOPS: %s\n", err)
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to resolve locations", "error", err)
+		http.Error(w, fmt.Sprintf("failed to resolve locations: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
@@ -251,14 +249,15 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 	commit := q.Get("commit")
 	limit, _ := strconv.Atoi(q.Get("limit"))
 
-	cursor, ok, err := s.decodeCursor(r)
+	cursor, err := s.decodeCursor(r)
 	if err != nil {
-		fmt.Printf("WHOOPS: %s\n", err)
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
-	if !ok {
-		http.Error(w, "", http.StatusNotFound)
+		if err == ErrMissingDump {
+			http.Error(w, "no such dump", http.StatusNotFound)
+			return
+		}
+
+		log15.Error("Failed to prepare cursor", "error", err)
+		http.Error(w, fmt.Sprintf("failed to prepare cursor: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
@@ -269,15 +268,15 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.newCursor != nil {
-		// TODO - implement
-	}
-
 	outers, err := s.serializeLocations(p.locations)
 	if err != nil {
-		fmt.Printf("WHOOPS: %s\n", err)
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to resolve locations", "error", err)
+		http.Error(w, fmt.Sprintf("failed to resolve locations: %s", err.Error()), http.StatusInternalServerError)
 		return
+	}
+
+	if p.newCursor != nil {
+		// TODO - implement
 	}
 
 	writeJSON(w, map[string]interface{}{"locations": outers})
@@ -293,17 +292,21 @@ func (s *Server) handleHover(w http.ResponseWriter, r *http.Request) {
 
 	text, rn, ok, err := s.getHover(file, line, character, uploadID)
 	if err != nil {
+		if err == ErrMissingDump {
+			http.Error(w, "no such dump", http.StatusNotFound)
+			return
+		}
+
 		log15.Error("Failed to handle hover request", "error", err)
 		http.Error(w, fmt.Sprintf("failed to handle hover request: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
-	if !ok {
-		// TODO - differentiate the other guy
-		writeJSON(w, nil)
-		return
-	}
 
-	writeJSON(w, map[string]interface{}{"text": text, "range": rn})
+	if !ok {
+		writeJSON(w, nil)
+	} else {
+		writeJSON(w, map[string]interface{}{"text": text, "range": rn})
+	}
 }
 
 // POST /uploads
@@ -312,13 +315,12 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 		IDs []int `json:"ids"`
 	}{}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		// TODO - 400 if json or body error?
-		fmt.Printf("WHOOPS XXX: %s\n", err)
-		http.Error(w, "", http.StatusInternalServerError)
+		log15.Error("Failed to read request body", "error", err)
+		http.Error(w, fmt.Sprintf("failed to read request body: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	states, err := s.getStates(payload.IDs)
+	states, err := s.db.GetStates(payload.IDs)
 	if err != nil {
 		log15.Error("Failed to retrieve upload states", "error", err)
 		http.Error(w, fmt.Sprintf("failed to retrieve upload states: %s", err.Error()), http.StatusInternalServerError)
@@ -335,82 +337,18 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 
 // POST /prune
 func (s *Server) handlePrune(w http.ResponseWriter, r *http.Request) {
-	id, prunable, err := s.doPrune()
+	id, prunable, err := s.db.DoPrune()
 	if err != nil {
 		log15.Error("Failed to prune upload", "error", err)
 		http.Error(w, fmt.Sprintf("failed to prune upload: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
+
 	if !prunable {
 		writeJSON(w, nil)
-		return
+	} else {
+		writeJSON(w, map[string]interface{}{"id": id})
 	}
-
-	writeJSON(w, map[string]interface{}{"id": id})
-}
-
-func (s *Server) decodeCursor(r *http.Request) (Cursor, bool, error) {
-	q := r.URL.Query()
-	repositoryID, _ := strconv.Atoi(q.Get("repositoryId"))
-	commit := q.Get("commit")
-	file := q.Get("path")
-	line, _ := strconv.Atoi(q.Get("line"))
-	character, _ := strconv.Atoi(q.Get("character"))
-	uploadID, _ := strconv.Atoi(q.Get("uploadId"))
-	limit, _ := strconv.Atoi(q.Get("limit"))
-	encoded := q.Get("cursor")
-
-	if encoded != "" {
-		cursor, err := decodeCursor(encoded)
-		if err != nil {
-			return Cursor{}, false, err
-		}
-
-		return cursor, true, nil
-	}
-
-	return s.makeCursor(repositoryID, commit, file, line, character, uploadID, limit)
-}
-
-func readIndexerName(f *os.File) (string, error) {
-	if _, err := f.Seek(0, 0); err != nil {
-		return "", err
-	}
-
-	gzipReader, err := gzip.NewReader(f)
-	if err != nil {
-		return "", err
-	}
-
-	line, isPrefix, err := bufio.NewReader(gzipReader).ReadLine()
-	if err != nil {
-		return "", err
-	}
-	if isPrefix {
-		// OOF strange condition in these parts
-		return "", err
-	}
-
-	meta := struct {
-		Label    string `json:"label"`
-		ToolInfo struct {
-			Name string `json:"name"`
-		} `json:"toolInfo"`
-	}{}
-
-	if err := json.Unmarshal(line, &meta); err != nil {
-		return "", err
-	}
-
-	if meta.Label != "metaData" || meta.ToolInfo.Name == "" {
-		panic("OOPS")
-	}
-
-	if _, err := f.Seek(0, 0); err != nil {
-		return "", err
-	}
-
-	return meta.ToolInfo.Name, nil
 }
 
 // idFromRequest returns the database id from the request URL's path. This method
