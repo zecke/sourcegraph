@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -39,27 +38,12 @@ func (j *Janitor) Start() {
 }
 
 func (j *Janitor) step() error {
-	query := `
-		UPDATE lsif_uploads u SET state = 'queued', started_at = null WHERE id = ANY(
-			SELECT id FROM lsif_uploads
-			WHERE state = 'processing' AND started_at < now() - ($1 * interval '1 second')
-			FOR UPDATE SKIP LOCKED
-		)
-		RETURNING u.id
-	`
-
-	rows, err := j.db.QueryContext(context.Background(), query, StalledUploadMaxAge/time.Second)
+	ids, err := j.cleanOld()
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 
-	for rows.Next() {
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			return err
-		}
-
+	for _, id := range ids {
 		// TODO - log instead
 		fmt.Printf("> RESET %#v\n", id)
 	}
