@@ -401,13 +401,6 @@ func Test_Parse(t *testing.T) {
 			WantGrammar:   `(concat "\\ " "\\ ")`,
 			WantHeuristic: `(concat "\\ " "\\ ")`,
 		},
-		/* FIXME
-		{
-			Input:         " ",
-			WantGrammar:   "",
-			WantHeuristic: "",
-		},
-		*/
 	}
 	for _, tt := range cases {
 		t.Run(tt.Name, func(t *testing.T) {

@@ -279,51 +279,47 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 		buf = buf[advance:]
 	}
 
+loop:
 	for len(buf) > 0 {
 		next()
-		if r == '(' {
+		switch {
+		case unicode.IsSpace(r) && balanced == 0:
+			// Stop scanning a potential pattern when we see
+			// whitespace in a balanced state.
+			break loop
+		case r == '(':
 			balanced += 1
 			piece = append(piece, r)
-			continue
-		}
-		if r == ')' {
+		case r == ')':
 			balanced -= 1
 			piece = append(piece, r)
-			continue
-		}
-		if unicode.IsSpace(r) && balanced == 0 {
-			// Stop scanning a potential pattern when we see whitespace in a balanced state.
-			break
-		}
-		if unicode.IsSpace(r) {
+		case unicode.IsSpace(r):
 			// We see a space and the pattern is unbalanced, so assume this
 			// terminates a piece of an incomplete search pattern.
 			if len(piece) > 0 {
 				pieces = append(pieces, string(piece))
 			}
 			piece = []rune{}
-			continue
-		}
-		if r != '\\' {
-			piece = append(piece, r)
-			continue
-		}
-		// Handle escape sequence.
-		if len(buf[advance:]) > 0 {
-			next()
-			switch r {
-			case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '(', ')':
-				piece = append(piece, '\\', r)
-			default:
-				// Unrecognized escape sequence.
+		case r == '\\':
+			// Handle escape sequence.
+			if len(buf[advance:]) > 0 {
+				next()
+				switch r {
+				case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '(', ')':
+					piece = append(piece, '\\', r)
+				default:
+					// Unrecognized escape sequence.
+					return pieces, count, false
+				}
+			} else {
+				// Unterminated escape sequence.
 				return pieces, count, false
 			}
-		} else {
-			// Unterminated escape sequence.
-			return pieces, count, false
+		default:
+			piece = append(piece, r)
 		}
+
 	}
-	// add last piece
 	if len(piece) > 0 {
 		pieces = append(pieces, string(piece))
 	}
