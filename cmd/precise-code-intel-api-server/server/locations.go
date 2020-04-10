@@ -1,40 +1,37 @@
 package server
 
-import "github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
+import (
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/bundles"
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
+)
 
-type LocationThingers struct {
-	DumpID int    `json:"dumpId"`
-	Path   string `json:"path"`
-	Range  Range  `json:"Range"`
+type ResolvedLocation struct {
+	Dump  db.Dump       `json:"dump"`
+	Path  string        `json:"path"`
+	Range bundles.Range `json:"range"`
 }
 
-type LocationThingers2 struct {
-	Dump  db.Dump `json:"dump"`
-	Path  string  `json:"path"`
-	Range Range   `json:"range"`
+type APILocation struct {
+	RepositoryID int           `json:"repositoryId"`
+	Commit       string        `json:"commit"`
+	Path         string        `json:"path"`
+	Range        bundles.Range `json:"range"`
 }
 
-type Outer struct {
-	RepositoryID int    `json:"repositoryId"`
-	Commit       string `json:"commit"`
-	Path         string `json:"path"`
-	Range        Range  `json:"range"`
-}
-
-func (s *Server) resolveLocations(root string, locations []Location) []LocationThingers {
-	var thingers []LocationThingers
+func resolveLocations(dump db.Dump, locations []bundles.Location) []ResolvedLocation {
+	var resolvedLocations []ResolvedLocation
 	for _, location := range locations {
-		thingers = append(thingers, LocationThingers{
-			DumpID: location.DumpID,
-			Path:   root + location.Path,
-			Range:  location.Range,
+		resolvedLocations = append(resolvedLocations, ResolvedLocation{
+			Dump:  dump,
+			Path:  dump.Root + location.Path,
+			Range: location.Range,
 		})
 	}
 
-	return thingers
+	return resolvedLocations
 }
 
-func (s *Server) resolveLocations2(locations []LocationThingers) ([]LocationThingers2, error) {
+func (s *Server) resolveLocations(locations []bundles.Location) ([]ResolvedLocation, error) {
 	uniq := map[int]struct{}{}
 	for _, l := range locations {
 		uniq[l.DumpID] = struct{}{}
@@ -50,11 +47,11 @@ func (s *Server) resolveLocations2(locations []LocationThingers) ([]LocationThin
 		return nil, err
 	}
 
-	var thingers []LocationThingers2
+	var thingers []ResolvedLocation
 	for _, location := range locations {
-		thingers = append(thingers, LocationThingers2{
+		thingers = append(thingers, ResolvedLocation{
 			Dump:  dumpsByID[location.DumpID],
-			Path:  location.Path,
+			Path:  dumpsByID[location.DumpID].Root + location.Path,
 			Range: location.Range,
 		})
 	}
@@ -62,15 +59,10 @@ func (s *Server) resolveLocations2(locations []LocationThingers) ([]LocationThin
 	return thingers, nil
 }
 
-func (s *Server) serializeLocations(locations []LocationThingers) ([]Outer, error) {
-	resolved, err := s.resolveLocations2(locations)
-	if err != nil {
-		return nil, err
-	}
-
-	var outers []Outer
-	for _, res := range resolved {
-		outers = append(outers, Outer{
+func (s *Server) serializeLocations(resolvedLocations []ResolvedLocation) ([]APILocation, error) {
+	var apiLocations []APILocation
+	for _, res := range resolvedLocations {
+		apiLocations = append(apiLocations, APILocation{
 			RepositoryID: res.Dump.RepositoryID,
 			Commit:       res.Dump.Commit,
 			Path:         res.Path,
@@ -78,5 +70,5 @@ func (s *Server) serializeLocations(locations []LocationThingers) ([]Outer, erro
 		})
 	}
 
-	return outers, nil
+	return apiLocations, nil
 }

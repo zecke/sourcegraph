@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/inconshreveable/log15"
+	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/bundles"
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 	"github.com/sourcegraph/sourcegraph/internal/trace/ot"
 	"github.com/tomnomnom/linkheader"
@@ -22,25 +23,25 @@ import (
 const DefaultUploadPageSize = 50
 
 type Server struct {
-	host             string
-	port             int
-	bundleManagerURL string
-	db               *db.DB
+	host                string
+	port                int
+	bundleManagerClient *bundles.BundleManagerClient
+	db                  *db.DB
 }
 
 type ServerOpts struct {
-	Host             string
-	Port             int
-	BundleManagerURL string
-	DB               *db.DB
+	Host                string
+	Port                int
+	BundleManagerClient *bundles.BundleManagerClient
+	DB                  *db.DB
 }
 
 func New(opts ServerOpts) *Server {
 	return &Server{
-		host:             opts.Host,
-		port:             opts.Port,
-		bundleManagerURL: opts.BundleManagerURL,
-		db:               opts.DB,
+		host:                opts.Host,
+		port:                opts.Port,
+		bundleManagerClient: opts.BundleManagerClient,
+		db:                  opts.DB,
 	}
 }
 
@@ -183,7 +184,7 @@ func (s *Server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, err := s.db.Enqueue(commit, root, tracingContext, repositoryID, indexerName, func(id int) error {
-		return sendUpload(s.bundleManagerURL, id, f)
+		return s.bundleManagerClient.SendUpload(id, f)
 	})
 	if err != nil {
 		log15.Error("Failed to enqueue payload", "error", err)
