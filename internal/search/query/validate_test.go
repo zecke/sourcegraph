@@ -1,7 +1,5 @@
 package query
 
-/*
-
 import (
 	"strings"
 	"testing"
@@ -98,4 +96,3 @@ func Test_PartitionSearchPattern(t *testing.T) {
 		})
 	}
 }
-*/
