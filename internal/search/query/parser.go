@@ -313,7 +313,7 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 			next()
 			switch r {
 			case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '(', ')':
-				piece = append(piece, r)
+				piece = append(piece, '\\', r)
 			default:
 				// Unrecognized escape sequence.
 				return pieces, count, false
@@ -324,7 +324,9 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 		}
 	}
 	// add last piece
-	pieces = append(pieces, string(piece))
+	if len(piece) > 0 {
+		pieces = append(pieces, string(piece))
+	}
 	return pieces, count, balanced == 0
 }
 
