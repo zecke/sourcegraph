@@ -266,9 +266,12 @@ func ScanParameter(parameter []byte) Parameter {
 	return Parameter{Field: "", Value: string(parameter)}
 }
 
-func ScanSearchPatternHeuristic(buf []byte) (int, bool) {
+// returns how much to advance, and chopped up strings
+func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 	var count, advance, balanced int
 	var r rune
+	piece := []rune{}
+	pieces := []string{}
 
 	next := func() {
 		r, advance = utf8.DecodeRune(buf)
@@ -280,35 +283,47 @@ func ScanSearchPatternHeuristic(buf []byte) (int, bool) {
 		next()
 		if r == '(' {
 			balanced += 1
+			piece = append(piece, r)
 			continue
 		}
 		if r == ')' {
 			balanced -= 1
-			continue
-		}
-		if r != '\\' {
+			piece = append(piece, r)
 			continue
 		}
 		if unicode.IsSpace(r) && balanced == 0 {
 			// Stop scanning a potential pattern when we see whitespace in a balanced state.
-			return count, true
+			// add last piece
+			pieces = append(pieces, string(piece))
+			count = count - 1 // This makes no difference. Check (trailing space?)
+			return pieces, count, true
+		}
+		if unicode.IsSpace(r) {
+			// We see a space and the pattern is unbalanced, so assume this
+			// terminates a piece of an incomplete search pattern.
+			pieces = append(pieces, string(piece))
+			piece = []rune{}
+		}
+		if r != '\\' {
+			piece = append(piece, r)
+			continue
 		}
 		// Handle escape sequence.
 		if len(buf[advance:]) > 0 {
 			next()
 			switch r {
 			case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"', '\'', '(', ')':
-				continue
+				piece = append(piece, r)
 			default:
 				// Unrecognized escape sequence.
-				return count, false
+				return pieces, count, false
 			}
 		} else {
 			// Unterminated escape sequence.
-			return count, false
+			return pieces, count, false
 		}
 	}
-	return count, false
+	return pieces, count, balanced == 0
 }
 
 // ParseSearchPatternHeuristic heuristically parses a search pattern containing
@@ -316,40 +331,20 @@ func ScanSearchPatternHeuristic(buf []byte) (int, bool) {
 // interpret parentheses as part of a search pattern, rather than an and/or
 // expression group. For example, In the regex foo(a|b)bar, we want to preserve
 // parentheses as part of the pattern.
-
 func (p *parser) ParseSearchPatternHeuristic() (Node, bool) {
 	if !p.heuristic {
 		return Parameter{Field: "", Value: ""}, false
 	}
 	start := p.pos
-	balanced := 0
-	for {
-		if p.expect(`\ `) || p.expect(`\(`) || p.expect(`\)`) {
-			continue
-		}
-		if p.expect(LPAREN) {
-			balanced += 1
-			continue
-		}
-		if p.expect(RPAREN) {
-			balanced -= 1
-			continue
-		}
-		if p.done() {
-			break
-		}
-		if isSpace(p.buf[p.pos:]) && balanced == 0 {
-			// Stop scanning a potential pattern when we see whitespace in a balanced state.
-			break
-		}
-		p.pos++
-	}
-	if len(p.buf[start:p.pos]) == 0 || balanced != 0 || !isPureSearchPattern(p.buf[start:p.pos]) {
-		// We tried validating the pattern but it is either empty, unbalanced, or an invalid and/or expression.
-		p.pos = start // Backtrack.
+	_, advance, ok := ScanSearchPatternHeuristic(p.buf[p.pos:])
+	end := start + advance
+	if !ok || len(p.buf[start:end]) == 0 || !isPureSearchPattern(p.buf[start:end]) {
+		// We tried validating the pattern but it is either unbalanced
+		// or malformed, empty, or an invalid and/or expression.
 		return Parameter{Field: "", Value: ""}, false
 	}
 	// The heuristic succeeds: we can process the string as a pure search pattern.
+	p.pos += advance
 	pieces := strings.Fields(string(p.buf[start:p.pos]))
 	if len(pieces) == 1 {
 		return Parameter{Field: "", Value: pieces[0]}, true
