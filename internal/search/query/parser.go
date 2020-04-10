@@ -324,7 +324,6 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 		}
 	}
 	// add last piece
-	// count = count - 1 // This makes no difference. Check (trailing space?)
 	pieces = append(pieces, string(piece))
 	return pieces, count, balanced == 0
 }
