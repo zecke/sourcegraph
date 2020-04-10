@@ -293,16 +293,16 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 		}
 		if unicode.IsSpace(r) && balanced == 0 {
 			// Stop scanning a potential pattern when we see whitespace in a balanced state.
-			// add last piece
-			pieces = append(pieces, string(piece))
-			count = count - 1 // This makes no difference. Check (trailing space?)
-			return pieces, count, true
+			break
 		}
 		if unicode.IsSpace(r) {
 			// We see a space and the pattern is unbalanced, so assume this
 			// terminates a piece of an incomplete search pattern.
-			pieces = append(pieces, string(piece))
+			if len(piece) > 0 {
+				pieces = append(pieces, string(piece))
+			}
 			piece = []rune{}
+			continue
 		}
 		if r != '\\' {
 			piece = append(piece, r)
@@ -323,6 +323,9 @@ func ScanSearchPatternHeuristic(buf []byte) ([]string, int, bool) {
 			return pieces, count, false
 		}
 	}
+	// add last piece
+	// count = count - 1 // This makes no difference. Check (trailing space?)
+	pieces = append(pieces, string(piece))
 	return pieces, count, balanced == 0
 }
 
@@ -336,7 +339,7 @@ func (p *parser) ParseSearchPatternHeuristic() (Node, bool) {
 		return Parameter{Field: "", Value: ""}, false
 	}
 	start := p.pos
-	_, advance, ok := ScanSearchPatternHeuristic(p.buf[p.pos:])
+	pieces, advance, ok := ScanSearchPatternHeuristic(p.buf[p.pos:])
 	end := start + advance
 	if !ok || len(p.buf[start:end]) == 0 || !isPureSearchPattern(p.buf[start:end]) {
 		// We tried validating the pattern but it is either unbalanced
@@ -345,7 +348,6 @@ func (p *parser) ParseSearchPatternHeuristic() (Node, bool) {
 	}
 	// The heuristic succeeds: we can process the string as a pure search pattern.
 	p.pos += advance
-	pieces := strings.Fields(string(p.buf[start:p.pos]))
 	if len(pieces) == 1 {
 		return Parameter{Field: "", Value: pieces[0]}, true
 	}
