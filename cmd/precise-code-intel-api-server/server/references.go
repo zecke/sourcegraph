@@ -6,11 +6,6 @@ import (
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 )
 
-// type PaginatedLocations struct {
-// 	locations []ResolvedLocation
-// 	newCursor *Cursor // TODO - no pointers
-// }
-
 func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	rpr := &ReferencePageResolver{
 		s:            s,
@@ -245,6 +240,40 @@ func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) ([
 	return nil, Cursor{}, false, nil
 }
 
+func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
+		return s.getSameRepoRemotePackageReferences(
+			repositoryID,
+			commit,
+			cursor.Scheme,
+			cursor.Name,
+			cursor.Version,
+			cursor.Identifier,
+			remoteDumpLimit,
+			cursor.SkipDumpsWhenBatching,
+		)
+	})
+}
+
+func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
+		return s.getPackageReferences(
+			repositoryID,
+			cursor.Scheme,
+			cursor.Name,
+			cursor.Version,
+			cursor.Identifier,
+			remoteDumpLimit,
+			cursor.SkipDumpsWhenBatching,
+		)
+	})
+}
+
+//
+//
+//
+//
+
 // TODO - perform transactionally
 func (s *Server) getSameRepoRemotePackageReferences(repositoryID int, commit, scheme, name, version, identifier string, limit, offset int) ([]db.Reference, int, int, error) {
 	visibleIDs, err := s.db.GetVisibleIDs(repositoryID, commit)
@@ -306,35 +335,6 @@ func (s *Server) gatherPackageReferences(identifier string, offset, limit, total
 	}
 
 	return refs, newOffset, nil
-}
-
-func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
-	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
-		return s.getSameRepoRemotePackageReferences(
-			repositoryID,
-			commit,
-			cursor.Scheme,
-			cursor.Name,
-			cursor.Version,
-			cursor.Identifier,
-			remoteDumpLimit,
-			cursor.SkipDumpsWhenBatching,
-		)
-	})
-}
-
-func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
-	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
-		return s.getPackageReferences(
-			repositoryID,
-			cursor.Scheme,
-			cursor.Name,
-			cursor.Version,
-			cursor.Identifier,
-			remoteDumpLimit,
-			cursor.SkipDumpsWhenBatching,
-		)
-	})
 }
 
 func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier string, limit int, cursor Cursor, fx func() ([]db.Reference, int, int, error)) ([]ResolvedLocation, Cursor, bool, error) {
