@@ -6,12 +6,12 @@ import (
 	"github.com/sourcegraph/sourcegraph/cmd/precise-code-intel-api-server/server/db"
 )
 
-type PaginatedLocations struct {
-	locations []ResolvedLocation
-	newCursor *Cursor // TODO - no pointers
-}
+// type PaginatedLocations struct {
+// 	locations []ResolvedLocation
+// 	newCursor *Cursor // TODO - no pointers
+// }
 
-func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Cursor) (PaginatedLocations, error) {
+func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	rpr := &ReferencePageResolver{
 		s:            s,
 		repositoryID: repositoryID,
@@ -19,7 +19,7 @@ func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Curs
 		limit:        limit,
 	}
 
-	return rpr.handlePagination(cursor)
+	return rpr.resolvePage(cursor)
 }
 
 //
@@ -28,15 +28,34 @@ func (s *Server) getRefs(repositoryID int, commit string, limit int, cursor Curs
 //
 
 type ReferencePageResolver struct {
-	s               *Server
+	s               *Server // TODO - do we need this?
 	repositoryID    int
 	commit          string
 	remoteDumpLimit int
 	limit           int
 }
 
-func (s *ReferencePageResolver) handlePagination(cursor Cursor) (PaginatedLocations, error) {
-	fns := map[string]func(Cursor) (PaginatedLocations, error){
+func (s *ReferencePageResolver) resolvePage(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	locations, newCursor, hasNewCursor, err := s.dispatchCursorHandler(cursor)
+	if err != nil {
+		return nil, Cursor{}, false, nil
+	}
+
+	if hasNewCursor && s.limit >= 0 {
+		var newLocations []ResolvedLocation
+		newLocations, newCursor, hasNewCursor, err = s.dispatchCursorHandler(newCursor)
+		if err != nil {
+			return nil, Cursor{}, false, err
+		}
+
+		locations = append(locations, newLocations...)
+	}
+
+	return locations, newCursor, hasNewCursor, nil
+}
+
+func (s *ReferencePageResolver) dispatchCursorHandler(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	fns := map[string]func(Cursor) ([]ResolvedLocation, Cursor, bool, error){
 		"same-dump":           s.handleSameDumpCursor,
 		"definition-monikers": s.handleDefinitionMonikersCursor,
 		"same-repo":           s.handleSameRepoCursor,
@@ -45,132 +64,95 @@ func (s *ReferencePageResolver) handlePagination(cursor Cursor) (PaginatedLocati
 
 	fn, ok := fns[cursor.Phase]
 	if !ok {
-		return PaginatedLocations{}, fmt.Errorf("malformed cursor")
+		return nil, Cursor{}, false, fmt.Errorf("malformed cursor")
 	}
 
 	return fn(cursor)
 }
 
-func (s *ReferencePageResolver) dispatch(
-	handler func() (PaginatedLocations, error),
-	makeCursor func() *Cursor, // TODO - no pointers
-) (PaginatedLocations, error) {
-	plocs, err := handler()
+func (s *ReferencePageResolver) handleSameDumpCursor(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	locations, newCursor, hasNewCursor, err := s.s.performSameDumpReferences(s.limit, cursor)
 	if err != nil {
-		return PaginatedLocations{}, err
+		return nil, Cursor{}, false, err
+	}
+	if hasNewCursor {
+		return locations, newCursor, true, nil
 	}
 
-	if plocs.newCursor == nil {
-		plocs.newCursor = makeCursor()
+	newCursor = Cursor{
+		DumpID:      cursor.DumpID,
+		Phase:       "definition-monikers",
+		Path:        cursor.Path,
+		Line:        cursor.Line,
+		Character:   cursor.Character,
+		Monikers:    cursor.Monikers,
+		SkipResults: 0,
 	}
+	return locations, newCursor, true, nil
+}
 
-	if plocs.newCursor == nil {
-		return plocs, nil
-	}
-
-	s.limit -= len(plocs.locations)
-	if s.limit <= 0 {
-		return plocs, nil
-	}
-
-	plocs2, err := s.handlePagination(*plocs.newCursor)
+func (s *ReferencePageResolver) handleDefinitionMonikersCursor(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	locations, newCursor, hasNewCursor, err := s.s.performDefinitionMonikersReference(s.limit, cursor)
 	if err != nil {
-		return PaginatedLocations{}, err
+		return nil, Cursor{}, false, err
+	}
+	if hasNewCursor {
+		return locations, newCursor, true, nil
 	}
 
-	return PaginatedLocations{
-		locations: append(plocs.locations, plocs2.locations...),
-		newCursor: plocs2.newCursor,
-	}, nil
-}
-
-func (s *ReferencePageResolver) handleSameDumpCursor(cursor Cursor) (PaginatedLocations, error) {
-	return s.dispatch(
-		func() (PaginatedLocations, error) {
-			return s.s.performSameDumpReferences(s.limit, cursor)
-		},
-		func() *Cursor {
-			return &Cursor{
-				DumpID:      cursor.DumpID,
-				Phase:       "definition-monikers",
-				Path:        cursor.Path,
-				Line:        cursor.Line,
-				Character:   cursor.Character,
-				Monikers:    cursor.Monikers,
-				SkipResults: 0,
-			}
-		},
-	)
-}
-
-func (s *ReferencePageResolver) handleDefinitionMonikersCursor(cursor Cursor) (PaginatedLocations, error) {
-	return s.dispatch(
-		func() (PaginatedLocations, error) {
-			return s.s.performDefinitionMonikersReference(s.limit, cursor)
-		},
-		func() *Cursor {
-			for _, moniker := range cursor.Monikers {
-				packageInformation, exists, err := s.s.lookupPackageInformation(cursor.DumpID, cursor.Path, moniker)
-				if err != nil {
-					// TODO - implement
-				}
-				if !exists {
-					// TODO - oops lop is wrong
-					// continue
-					return nil
-				}
-
-				return &Cursor{
-					DumpID:                 cursor.DumpID,
-					Phase:                  "same-repo",
-					Scheme:                 moniker.Scheme,
-					Identifier:             moniker.Identifier,
-					Name:                   packageInformation.Name,
-					Version:                packageInformation.Version,
-					DumpIDs:                nil,
-					TotalDumpsWhenBatching: 0,
-					SkipDumpsWhenBatching:  0,
-					SkipDumpsInBatch:       0,
-					SkipResultsInDump:      0,
-				}
-			}
-			return nil
-		},
-	)
-}
-
-func (s *ReferencePageResolver) handleSameRepoCursor(cursor Cursor) (PaginatedLocations, error) {
-	return s.dispatch(
-		func() (PaginatedLocations, error) {
-			return s.s.performSameRepositoryRemoteReferences(s.repositoryID, s.commit, s.remoteDumpLimit, s.limit, cursor)
-		},
-		func() *Cursor {
-			return &Cursor{
+	for _, moniker := range cursor.Monikers {
+		packageInformation, exists, err := s.s.lookupPackageInformation(cursor.DumpID, cursor.Path, moniker)
+		if err != nil {
+			return nil, Cursor{}, false, err
+		}
+		if exists {
+			newCursor = Cursor{
 				DumpID:                 cursor.DumpID,
-				Phase:                  "remote-repo",
-				Scheme:                 cursor.Scheme,
-				Identifier:             cursor.Identifier,
-				Name:                   cursor.Name,
-				Version:                cursor.Version,
+				Phase:                  "same-repo",
+				Scheme:                 moniker.Scheme,
+				Identifier:             moniker.Identifier,
+				Name:                   packageInformation.Name,
+				Version:                packageInformation.Version,
 				DumpIDs:                nil,
 				TotalDumpsWhenBatching: 0,
 				SkipDumpsWhenBatching:  0,
 				SkipDumpsInBatch:       0,
 				SkipResultsInDump:      0,
 			}
-		},
-	)
+			return locations, newCursor, true, nil
+		}
+	}
+
+	return locations, Cursor{}, false, nil
 }
 
-func (s *ReferencePageResolver) handleRemoteRepoCursor(cursor Cursor) (PaginatedLocations, error) {
-	return s.dispatch(
-		func() (PaginatedLocations, error) {
-			return s.s.performRemoteReferences(s.repositoryID, s.remoteDumpLimit, s.limit, cursor)
-		},
-		func() *Cursor {
-			return nil
-		},
-	)
+func (s *ReferencePageResolver) handleSameRepoCursor(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	locations, newCursor, hasNewCursor, err := s.s.performSameRepositoryRemoteReferences(s.repositoryID, s.commit, s.remoteDumpLimit, s.limit, cursor)
+	if err != nil {
+		return nil, Cursor{}, false, err
+	}
+	if hasNewCursor {
+		return locations, newCursor, true, nil
+	}
+
+	newCursor = Cursor{
+		DumpID:                 cursor.DumpID,
+		Phase:                  "remote-repo",
+		Scheme:                 cursor.Scheme,
+		Identifier:             cursor.Identifier,
+		Name:                   cursor.Name,
+		Version:                cursor.Version,
+		DumpIDs:                nil,
+		TotalDumpsWhenBatching: 0,
+		SkipDumpsWhenBatching:  0,
+		SkipDumpsInBatch:       0,
+		SkipResultsInDump:      0,
+	}
+	return locations, newCursor, true, nil
+}
+
+func (s *ReferencePageResolver) handleRemoteRepoCursor(cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
+	return s.s.performRemoteReferences(s.repositoryID, s.remoteDumpLimit, s.limit, cursor)
 }
 
 //
@@ -178,19 +160,19 @@ func (s *ReferencePageResolver) handleRemoteRepoCursor(cursor Cursor) (Paginated
 //
 //
 
-func (s *Server) performSameDumpReferences(limit int, cursor Cursor) (PaginatedLocations, error) {
+func (s *Server) performSameDumpReferences(limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	dump, db, exists, err := s.getDumpAndBundleClient(cursor.DumpID)
 	if err != nil {
-		return PaginatedLocations{}, err
+		return nil, Cursor{}, false, err
 	}
 	if !exists {
-		return PaginatedLocations{}, nil
+		return nil, Cursor{}, false, nil
 	}
 
 	// TODO - make an ordered location set (also in bundle manager)
 	locations, err := db.References(cursor.Path, cursor.Line, cursor.Character)
 	if err != nil {
-		return PaginatedLocations{}, err
+		return nil, Cursor{}, false, err
 	}
 
 	// Search the references table of the current dump. This search is necessary because
@@ -200,7 +182,7 @@ func (s *Server) performSameDumpReferences(limit int, cursor Cursor) (PaginatedL
 	for _, moniker := range cursor.Monikers {
 		results, _, err := db.MonikerResults("reference", moniker.Scheme, moniker.Identifier, nil, nil)
 		if err != nil {
-			return PaginatedLocations{}, err
+			return nil, Cursor{}, false, err
 		}
 
 		locations = append(locations, results...)
@@ -209,12 +191,8 @@ func (s *Server) performSameDumpReferences(limit int, cursor Cursor) (PaginatedL
 	// TODO - bounds check
 	resolved := resolveLocations(dump, locations[cursor.SkipResults:cursor.SkipResults+limit])
 
-	pl := PaginatedLocations{
-		locations: resolved,
-	}
-
 	if newOffset := cursor.SkipResults + limit; newOffset < len(locations) {
-		pl.newCursor = &Cursor{
+		c := Cursor{
 			Phase:       cursor.Phase,
 			DumpID:      cursor.DumpID,
 			Path:        cursor.Path,
@@ -223,12 +201,14 @@ func (s *Server) performSameDumpReferences(limit int, cursor Cursor) (PaginatedL
 			Monikers:    cursor.Monikers,
 			SkipResults: cursor.SkipResults + limit,
 		}
+
+		return resolved, c, true, nil
 	}
 
-	return pl, nil
+	return resolved, Cursor{}, false, nil
 }
 
-func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) (PaginatedLocations, error) {
+func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	for _, moniker := range cursor.Monikers {
 		if moniker.Kind != "import" {
 			continue
@@ -236,35 +216,33 @@ func (s *Server) performDefinitionMonikersReference(limit int, cursor Cursor) (P
 
 		locations, count, err := s.lookupMoniker(cursor.DumpID, cursor.Path, moniker, "reference", &limit, &cursor.SkipResults)
 		if err != nil {
-			return PaginatedLocations{}, err
+			return nil, Cursor{}, false, err
 		}
 
 		if len(locations) > 0 {
 			// TODO - unify these
 			resolved, err := s.resolveLocations(locations)
 			if err != nil {
-				return PaginatedLocations{}, err
-			}
-
-			pl := PaginatedLocations{
-				locations: resolved,
+				return nil, Cursor{}, false, err
 			}
 
 			if newOffset := cursor.SkipResults + len(locations); newOffset < count {
-				pl.newCursor = &Cursor{
+				c := Cursor{
 					Phase:       cursor.Phase,
 					DumpID:      cursor.DumpID,
 					Path:        cursor.Path,
 					Monikers:    cursor.Monikers,
 					SkipResults: cursor.SkipResults + limit,
 				}
+
+				return resolved, c, true, nil
 			}
 
-			return pl, nil
+			return resolved, Cursor{}, false, nil
 		}
 	}
 
-	return PaginatedLocations{}, nil
+	return nil, Cursor{}, false, nil
 }
 
 // TODO - perform transactionally
@@ -330,7 +308,7 @@ func (s *Server) gatherPackageReferences(identifier string, offset, limit, total
 	return refs, newOffset, nil
 }
 
-func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) (PaginatedLocations, error) {
+func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit string, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
 		return s.getSameRepoRemotePackageReferences(
 			repositoryID,
@@ -345,7 +323,7 @@ func (s *Server) performSameRepositoryRemoteReferences(repositoryID int, commit 
 	})
 }
 
-func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit int, cursor Cursor) (PaginatedLocations, error) {
+func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit int, cursor Cursor) ([]ResolvedLocation, Cursor, bool, error) {
 	return s.locationsFromRemoteReferences(cursor.DumpID, cursor.Scheme, cursor.Identifier, limit, cursor, func() ([]db.Reference, int, int, error) {
 		return s.getPackageReferences(
 			repositoryID,
@@ -359,11 +337,11 @@ func (s *Server) performRemoteReferences(repositoryID, remoteDumpLimit, limit in
 	})
 }
 
-func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier string, limit int, cursor Cursor, fx func() ([]db.Reference, int, int, error)) (PaginatedLocations, error) {
+func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier string, limit int, cursor Cursor, fx func() ([]db.Reference, int, int, error)) ([]ResolvedLocation, Cursor, bool, error) {
 	if len(cursor.DumpIDs) == 0 {
 		packageRefs, newOffset, totalCount, err := fx()
 		if err != nil {
-			return PaginatedLocations{}, err
+			return nil, Cursor{}, false, err
 		}
 
 		var dumpIDs []int
@@ -389,7 +367,7 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 
 		dump, bundleClient, exists, err := s.getDumpAndBundleClient(batchDumpID)
 		if err != nil {
-			return PaginatedLocations{}, err
+			return nil, Cursor{}, false, err
 		}
 		if !exists {
 			continue
@@ -397,7 +375,7 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 
 		results, count, err := bundleClient.MonikerResults("reference", scheme, identifier, &limit, &cursor.SkipResultsInDump)
 		if err != nil {
-			return PaginatedLocations{}, err
+			return nil, Cursor{}, false, err
 		}
 
 		if len(results) > 0 {
@@ -406,12 +384,10 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 
 			// TODO - should be resolved all at once
 			resolved := resolveLocations(dump, results)
-			pl := PaginatedLocations{
-				locations: resolved,
-			}
 
+			var c Cursor
 			if newResultOffset < count {
-				pl.newCursor = &Cursor{
+				c = Cursor{
 					Phase:                  cursor.Phase,
 					DumpID:                 cursor.DumpID,
 					Identifier:             cursor.Identifier,
@@ -425,7 +401,7 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 					SkipResultsInDump:      cursor.SkipResultsInDump + limit,
 				}
 			} else if moreDumps {
-				pl.newCursor = &Cursor{
+				c = Cursor{
 					Phase:                  cursor.Phase,
 					DumpID:                 cursor.DumpID,
 					Identifier:             cursor.Identifier,
@@ -439,7 +415,7 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 					SkipResultsInDump:      0,
 				}
 			} else if cursor.SkipDumpsWhenBatching < cursor.TotalDumpsWhenBatching {
-				pl.newCursor = &Cursor{
+				c = Cursor{
 					Phase:                  cursor.Phase,
 					DumpID:                 cursor.DumpID,
 					Identifier:             cursor.Identifier,
@@ -452,11 +428,13 @@ func (s *Server) locationsFromRemoteReferences(dumpID int, scheme, identifier st
 					SkipDumpsInBatch:       0,
 					SkipResultsInDump:      0,
 				}
+			} else {
+				return resolved, c, false, nil
 			}
 
-			return pl, nil
+			return resolved, c, true, nil
 		}
 	}
 
-	return PaginatedLocations{}, nil
+	return nil, Cursor{}, false, nil
 }

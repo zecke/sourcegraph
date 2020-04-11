@@ -262,22 +262,23 @@ func (s *Server) handleReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := s.getRefs(repositoryID, commit, limit, cursor)
+	locations, newCursor, hasNewCursor, err := s.getRefs(repositoryID, commit, limit, cursor)
 	if err != nil {
 		log15.Error("Failed to handle references request", "error", err)
 		http.Error(w, fmt.Sprintf("failed to handle references request: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	outers, err := s.serializeLocations(p.locations)
+	outers, err := s.serializeLocations(locations)
 	if err != nil {
 		log15.Error("Failed to resolve locations", "error", err)
 		http.Error(w, fmt.Sprintf("failed to resolve locations: %s", err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	if p.newCursor != nil {
+	if hasNewCursor {
 		// TODO - implement
+		fmt.Printf("New cursor: %#v\n", newCursor)
 	}
 
 	writeJSON(w, map[string]interface{}{"locations": outers})
