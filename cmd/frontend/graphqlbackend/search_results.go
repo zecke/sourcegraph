@@ -663,46 +663,105 @@ func intersect(left, right *SearchResultsResolver) (*SearchResultsResolver, erro
 		merged = append(merged, ltmp)
 	}
 	left.SearchResults = merged
-	// merge common search data.
 	left.searchResultsCommon.update(right.searchResultsCommon)
 	// for intersect we want the newly computed intersection size.
 	left.searchResultsCommon.resultCount = int32(len(merged))
 	return left, nil
 }
 
+func (r *searchResolver) evaluateAnd(ctx context.Context, scopeParameters []query.Node, operands []query.Node) (*SearchResultsResolver, error) {
+	if len(operands) == 0 {
+		return nil, nil
+	}
+
+	var err error
+	var result *SearchResultsResolver
+	var new *SearchResultsResolver
+
+	// Add stable to scope parameters, it's basically impossible to do this
+	// properly otherwise.
+	//stableScopeParameters := append(scopeParameters, query.Parameter{Field: "stable", Value: "true", Negated: false})
+	stableScopeParameters := scopeParameters
+
+	// set want to value of count, if specified. otherwise, 30.
+	want := int32(5)    // The max number of intersection results we want.
+	count := want * 2   // Thumbsuck number of results to get for an intersection.
+	max := int32(10000) // Don't set count to more than 10000 for each expression. Just cap it and alert.
+
+loop:
+	scopeParameters = append(stableScopeParameters, query.Parameter{Field: "count", Value: strconv.FormatInt(int64(count), 10), Negated: false})
+
+	exhausted := true
+	result, err = r.evaluatePatternExpression(ctx, scopeParameters, operands[0])
+	if err != nil {
+		return nil, err
+	}
+	exhausted = !result.limitHit && exhausted
+	for _, term := range operands[1:] {
+		new, err = r.evaluatePatternExpression(ctx, scopeParameters, term)
+		if err != nil {
+			return nil, err
+		}
+		if new != nil {
+			exhausted = !new.limitHit && exhausted
+			result, err = intersect(result, new)
+		}
+	}
+	// if the result size set is not big enough, and we haven't exhausted
+	// search on all expressions, loop.
+	if result.searchResultsCommon.resultCount < want && !exhausted {
+		log15.Info("Got", "results", result.searchResultsCommon.resultCount, "want", want)
+		log15.Info("Ex", "exhausted", exhausted)
+		log15.Info("Count", "count", count)
+		count = count * 2
+		if count < max {
+			goto loop
+		}
+	}
+	log15.Info("oh hi")
+	log15.Info("Got final", "results", result.searchResultsCommon.resultCount, "want", want)
+	result.limitHit = !exhausted
+	log15.Info("Ex", "exhausted", exhausted)
+	return result, nil
+}
+
+func (r *searchResolver) evaluateOr(ctx context.Context, scopeParameters []query.Node, operands []query.Node) (*SearchResultsResolver, error) {
+	if len(operands) == 0 {
+		return nil, nil
+	}
+	result, err := r.evaluatePatternExpression(ctx, scopeParameters, operands[0])
+	if err != nil {
+		return nil, err
+	}
+	var new *SearchResultsResolver
+	for _, term := range operands[1:] {
+		new, err = r.evaluatePatternExpression(ctx, scopeParameters, term)
+		if err != nil {
+			return nil, err
+		}
+		if new != nil {
+			result, err = union(result, new)
+		}
+	}
+	return result, nil
+}
+
 func (r *searchResolver) evaluateOperator(ctx context.Context, scopeParameters []query.Node, operator query.Operator) (*SearchResultsResolver, error) {
 	if len(operator.Operands) == 0 {
 		return nil, nil
 	}
-	var new *SearchResultsResolver
+	var result *SearchResultsResolver
 	var err error
-	result, err := r.evaluatePatternExpression(ctx, scopeParameters, operator.Operands[0])
+	if operator.Kind == query.And {
+		result, err = r.evaluateAnd(ctx, scopeParameters, operator.Operands)
+	} else {
+		result, err = r.evaluateOr(ctx, scopeParameters, operator.Operands)
+	}
 	if err != nil {
 		return nil, err
 	}
 	if result == nil {
 		return nil, nil
-	}
-	for _, term := range operator.Operands[1:] {
-		new, err = r.evaluatePatternExpression(ctx, scopeParameters, term)
-		if err != nil {
-			return nil, err
-		}
-		if new == nil && operator.Kind == query.And {
-			// Shortcircuit: intersecting with empty new results is empty.
-			return nil, nil
-		}
-		if new != nil {
-			switch operator.Kind {
-			case query.And:
-				result, err = intersect(result, new)
-			case query.Or:
-				result, err = union(result, new)
-			}
-			if err != nil {
-				return nil, err
-			}
-		}
 	}
 	return result, nil
 }

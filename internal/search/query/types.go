@@ -80,7 +80,6 @@ func (q AndOrQuery) RegexpPatterns(field string) (values, negatedValues []string
 			values = append(values, visitedValue)
 		}
 	})
-	log15.Info("Query", "RegexpPatterns", field)
 	return values, negatedValues
 }
 
@@ -92,7 +91,7 @@ func (q AndOrQuery) StringValues(field string) (values, negatedValues []string) 
 			values = append(values, visitedValue)
 		}
 	})
-	log15.Info("Query", "StringValues", field)
+	log15.Info("StringValues", field, values)
 	return values, negatedValues
 }
 
@@ -104,7 +103,6 @@ func (q AndOrQuery) StringValue(field string) (value, negatedValue string) {
 			value = visitedValue
 		}
 	})
-	log15.Info("Query", "StringValue", field)
 	return value, negatedValue
 }
 
@@ -113,7 +111,6 @@ func (q AndOrQuery) Values(field string) []*types.Value {
 	VisitField(q.Query, field, func(value string, _ bool) {
 		values = append(values, valueToTypedValue(field, value)...)
 	})
-	log15.Info("Query", "Values", field)
 	return values
 }
 
@@ -122,7 +119,6 @@ func (q AndOrQuery) Fields() map[string][]*types.Value {
 	VisitParameter(q.Query, func(field, value string, _ bool) {
 		fields[field] = valueToTypedValue(field, value)
 	})
-	log15.Info("Query", "Fields", fmt.Sprintf("size: %d", len(fields)))
 	return fields
 }
 
@@ -139,7 +135,6 @@ func (q AndOrQuery) ParseTree() syntax.ParseTree {
 		}
 		tree = append(tree, expr)
 	})
-	log15.Info("Query", "ParseTree", tree)
 	return tree
 }
 
@@ -153,7 +148,6 @@ func (q AndOrQuery) BoolValue(field string) bool {
 
 func (q AndOrQuery) IsCaseSensitive() bool {
 	result := q.BoolValue("case")
-	log15.Info("Query", "IsCaseSensitive", result)
 	return result
 }
 
@@ -237,6 +231,5 @@ func valueToTypedValue(field, value string) []*types.Value {
 		FieldCombyRule:
 		return []*types.Value{{String: &value}}
 	}
-	log15.Info("Unhandled typed value conversion", field, value)
 	return []*types.Value{{String: &value}}
 }

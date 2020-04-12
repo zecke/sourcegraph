@@ -268,7 +268,10 @@ func (r *searchResolver) maxResults() int32 {
 	}
 	count, _ := r.query.StringValues(query.FieldCount)
 	if len(count) > 0 {
-		n, _ := strconv.Atoi(count[0])
+		n, err := strconv.Atoi(count[0])
+		if err != nil {
+			log15.Warn("atoi", "err", err.Error())
+		}
 		if n > 0 {
 			return int32(n)
 		}
