@@ -1,9 +1,9 @@
 import H from 'history'
 import AlertCircleIcon from 'mdi-react/AlertCircleIcon'
-import * as React from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { RouteComponentProps } from 'react-router'
 import { Link } from 'react-router-dom'
-import { Observable, Subject, Subscription } from 'rxjs'
+import { Observable, Subject } from 'rxjs'
 import { catchError, map, mapTo, startWith, switchMap, tap } from 'rxjs/operators'
 import { gql } from '../../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../../shared/src/graphql/schema'
@@ -26,14 +26,6 @@ interface Props extends RouteComponentProps<{}>, ThemeProps {
 
 const LOADING = 'loading' as const
 
-interface State {
-    /**
-     * The result of creating the paid product subscription: null when complete or not started yet,
-     * loading, or an error.
-     */
-    creationOrError: null | typeof LOADING | ErrorLike
-}
-
 /**
  * Displays a form and payment flow to purchase a product subscription.
  *
@@ -41,78 +33,80 @@ interface State {
  * view it at /subscriptions/new and are allowed to price out a subscription, but they must sign in
  * to buy the subscription.
  */
-export class UserSubscriptionsNewProductSubscriptionPage extends React.Component<Props, State> {
-    public state: State = { creationOrError: null }
+export const UserSubscriptionsNewProductSubscriptionPage: React.FunctionComponent<Props> = ({
+    user,
+    location,
+    history,
+    isLightTheme,
+}) => {
+    useEffect(() => eventLogger.logViewEvent('UserSubscriptionsNewProductSubscription'), [])
 
-    private submits = new Subject<GQL.ICreatePaidProductSubscriptionOnDotcomMutationArguments>()
-    private subscriptions = new Subscription()
+    /**
+     * The result of creating the paid product subscription: null when complete or not started yet,
+     * loading, or an error.
+     */
+    const [creationOrError, setCreationOrError] = useState<null | typeof LOADING | ErrorLike>(null)
 
-    public componentDidMount(): void {
-        eventLogger.logViewEvent('UserSubscriptionsNewProductSubscription')
-        this.subscriptions.add(
-            this.submits
-                .pipe(
-                    switchMap(args =>
-                        createPaidProductSubscription(args).pipe(
-                            tap(({ productSubscription }) => {
-                                // Redirect to new subscription upon success.
-                                this.props.history.push(productSubscription.url)
-                            }),
-                            mapTo(null),
-                            catchError(err => [asError(err)]),
-                            startWith(LOADING),
-                            map(c => ({ creationOrError: c }))
-                        )
+    const submits = useMemo(() => new Subject<GQL.ICreatePaidProductSubscriptionOnDotcomMutationArguments>(), [])
+    useEffect(() => {
+        const subscription = submits
+            .pipe(
+                switchMap(args =>
+                    createPaidProductSubscription(args).pipe(
+                        tap(({ productSubscription }) => {
+                            // Redirect to new subscription upon success.
+                            history.push(productSubscription.url)
+                        }),
+                        mapTo(null),
+                        catchError((err: ErrorLike) => [asError(err)]),
+                        startWith(LOADING)
                     )
                 )
-                .subscribe(stateUpdate => this.setState(stateUpdate))
-        )
+            )
+            .subscribe(setCreationOrError)
+        return () => subscription.unsubscribe()
+    }, [history, submits])
+    const onSubmit = useCallback(
+        (args: ProductSubscriptionFormData): void => {
+            submits.next(args)
+        },
+        [submits]
+    )
+
+    if (user && !user.viewerCanAdminister) {
+        return <HeroPage icon={AlertCircleIcon} title="Not authorized" />
     }
 
-    public componentWillUnmount(): void {
-        this.subscriptions.unsubscribe()
-    }
-
-    public render(): JSX.Element | null {
-        if (this.props.user && !this.props.user.viewerCanAdminister) {
-            return <HeroPage icon={AlertCircleIcon} title="Not authorized" />
-        }
-
-        return (
-            <div className="user-subscriptions-new-product-subscription-page">
-                <PageTitle title="New product subscription" />
-                {this.props.user && <BackToAllSubscriptionsLink user={this.props.user} />}
-                <h2>New subscription</h2>
-                <ProductSubscriptionForm
-                    accountID={this.props.user ? this.props.user.id : null}
-                    subscriptionID={null}
-                    initialValue={parseProductSubscriptionInputFromLocation(this.props.location) || undefined}
-                    isLightTheme={this.props.isLightTheme}
-                    onSubmit={this.onSubmit}
-                    submissionState={this.state.creationOrError}
-                    primaryButtonText="Buy subscription"
-                    afterPrimaryButton={
-                        <small className="form-text text-muted">
-                            Your license key will be available immediately after payment.
-                            <br />
-                            <br />
-                            <Link to="/terms" target="_blank">
-                                Terms of Service
-                            </Link>{' '}
-                            |{' '}
-                            <Link to="/privacy" target="_blank">
-                                Privacy Policy
-                            </Link>
-                        </small>
-                    }
-                />
-            </div>
-        )
-    }
-
-    private onSubmit = (args: ProductSubscriptionFormData): void => {
-        this.submits.next(args)
-    }
+    return (
+        <div className="user-subscriptions-new-product-subscription-page">
+            <PageTitle title="New product subscription" />
+            {user && <BackToAllSubscriptionsLink user={user} />}
+            <h2>New subscription</h2>
+            <ProductSubscriptionForm
+                accountID={user ? user.id : null}
+                subscriptionID={null}
+                initialValue={parseProductSubscriptionInputFromLocation(location) || undefined}
+                isLightTheme={isLightTheme}
+                onSubmit={onSubmit}
+                submissionState={creationOrError}
+                primaryButtonText="Buy subscription"
+                afterPrimaryButton={
+                    <small className="form-text text-muted">
+                        Your license key will be available immediately after payment.
+                        <br />
+                        <br />
+                        <Link to="/terms" target="_blank">
+                            Terms of Service
+                        </Link>{' '}
+                        |{' '}
+                        <Link to="/privacy" target="_blank">
+                            Privacy Policy
+                        </Link>
+                    </small>
+                }
+            />
+        </div>
+    )
 }
 
 /**
