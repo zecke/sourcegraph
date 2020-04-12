@@ -3,9 +3,9 @@ import { parseISO } from 'date-fns'
 import formatDistanceStrict from 'date-fns/formatDistanceStrict'
 import { isEqual } from 'lodash'
 import ErrorIcon from 'mdi-react/ErrorIcon'
-import * as React from 'react'
-import { Observable, of, Subject, Subscription } from 'rxjs'
-import { catchError, distinctUntilChanged, map, startWith, switchMap, tap } from 'rxjs/operators'
+import React, { useState, useEffect } from 'react'
+import { Observable } from 'rxjs'
+import { catchError, map, startWith } from 'rxjs/operators'
 import { gql } from '../../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../../shared/src/graphql/schema'
 import { asError, createAggregateError, ErrorLike, isErrorLike } from '../../../../../shared/src/util/errors'
@@ -34,149 +34,117 @@ interface Props {
      * is always false.
      */
     onValidityChange: (value: boolean) => void
+
+    /** For mocking in tests only. */
+    _queryPreviewProductSubscriptionInvoice?: typeof queryPreviewProductSubscriptionInvoice
 }
 
 const LOADING = 'loading' as const
 
-interface State {
-    /**
-     * The preview invoice for the subscription, null if the input is invalid to generate an
-     * invoice, loading, or an error.
-     */
-    previewInvoiceOrError: GQL.IProductSubscriptionPreviewInvoice | null | typeof LOADING | ErrorLike
-}
+type PreviewInvoiceOrError = GQL.IProductSubscriptionPreviewInvoice | null | typeof LOADING | ErrorLike
+
+const isPreviewInvoiceInvalid = (previewInvoiceOrError: PreviewInvoiceOrError): boolean =>
+    Boolean(
+        previewInvoiceOrError === null ||
+            previewInvoiceOrError === LOADING ||
+            isErrorLike(previewInvoiceOrError) ||
+            isEqual(previewInvoiceOrError.beforeInvoiceItem, previewInvoiceOrError.afterInvoiceItem) ||
+            previewInvoiceOrError.isDowngradeRequiringManualIntervention
+    )
 
 /**
  * Displays the payment section of the new product subscription form.
  */
-export class NewProductSubscriptionPaymentSection extends React.PureComponent<Props, State> {
-    public state: State = {
-        previewInvoiceOrError: LOADING,
-    }
+export const NewProductSubscriptionPaymentSection: React.FunctionComponent<Props> = ({
+    accountID,
+    subscriptionID,
+    productSubscription,
+    onValidityChange,
+    _queryPreviewProductSubscriptionInvoice = queryPreviewProductSubscriptionInvoice,
+}) => {
+    /**
+     * The preview invoice for the subscription, null if the input is invalid to generate an
+     * invoice, loading, or an error.
+     */
+    const [previewInvoiceOrError, setPreviewInvoiceOrError] = useState<PreviewInvoiceOrError>(LOADING)
 
-    private componentUpdates = new Subject<Props>()
-    private subscriptions = new Subscription()
+    useEffect(() => {
+        onValidityChange(!isPreviewInvoiceInvalid(previewInvoiceOrError))
+    }, [onValidityChange, previewInvoiceOrError])
 
-    public componentDidMount(): void {
-        const argChanges = this.componentUpdates.pipe(
-            map(({ accountID, subscriptionID, productSubscription }) => ({
-                accountID,
-                subscriptionID,
-                productSubscription,
-            })),
-            distinctUntilChanged(
-                (a, b) =>
-                    a.accountID === b.accountID &&
-                    a.subscriptionID === b.subscriptionID &&
-                    isEqual(a.productSubscription, b.productSubscription)
+    useEffect(() => {
+        if (productSubscription === null) {
+            setPreviewInvoiceOrError(null)
+            return
+        }
+
+        const subscription = _queryPreviewProductSubscriptionInvoice({
+            account: accountID,
+            subscriptionToUpdate: subscriptionID,
+            productSubscription,
+        })
+            .pipe(
+                catchError((err: ErrorLike) => [asError(err)]),
+                startWith(LOADING)
             )
-        )
+            .subscribe(setPreviewInvoiceOrError)
+        return () => subscription.unsubscribe()
+    }, [accountID, subscriptionID, productSubscription, _queryPreviewProductSubscriptionInvoice])
 
-        this.subscriptions.add(
-            argChanges
-                .pipe(
-                    switchMap(({ accountID, subscriptionID, productSubscription }) => {
-                        if (productSubscription === null) {
-                            return of(null)
-                        }
-                        return queryPreviewProductSubscriptionInvoice({
-                            account: accountID,
-                            subscriptionToUpdate: subscriptionID,
-                            productSubscription,
-                        }).pipe(
-                            catchError(err => [asError(err)]),
-                            startWith(LOADING)
-                        )
-                    }),
-                    tap(result => this.props.onValidityChange(!this.isPreviewInvoiceInvalid(result))),
-                    map(result => ({ previewInvoiceOrError: result }))
-                )
-                .subscribe(stateUpdate => this.setState(stateUpdate))
-        )
-
-        this.componentUpdates.next(this.props)
-    }
-
-    public componentDidUpdate(): void {
-        this.componentUpdates.next(this.props)
-    }
-
-    public componentWillUnmount(): void {
-        this.subscriptions.unsubscribe()
-    }
-
-    private isPreviewInvoiceInvalid(previewInvoiceOrError: State['previewInvoiceOrError']): boolean {
-        return Boolean(
-            previewInvoiceOrError === null ||
-                previewInvoiceOrError === LOADING ||
-                isErrorLike(previewInvoiceOrError) ||
-                isEqual(previewInvoiceOrError.beforeInvoiceItem, previewInvoiceOrError.afterInvoiceItem) ||
-                previewInvoiceOrError.isDowngradeRequiringManualIntervention
-        )
-    }
-
-    public render(): JSX.Element | null {
-        return (
-            <div className="new-product-subscription-payment-section">
-                <div className="form-text mb-2">
-                    {this.state.previewInvoiceOrError === LOADING ? (
-                        <LoadingSpinner className="icon-inline" />
-                    ) : !this.props.productSubscription || this.state.previewInvoiceOrError === null ? (
-                        <>&mdash;</>
-                    ) : isErrorLike(this.state.previewInvoiceOrError) ? (
-                        <span className="text-danger">
-                            <ErrorIcon
-                                className="icon-inline"
-                                data-tooltip={this.state.previewInvoiceOrError.message}
-                            />{' '}
-                            Error
-                        </span>
-                    ) : this.state.previewInvoiceOrError.beforeInvoiceItem ? (
-                        <>
-                            <ProductSubscriptionBeforeAfterInvoiceItem
-                                beforeInvoiceItem={this.state.previewInvoiceOrError.beforeInvoiceItem}
-                                afterInvoiceItem={this.state.previewInvoiceOrError.afterInvoiceItem}
-                                className="mb-2"
-                            />
-                            {this.state.previewInvoiceOrError.isDowngradeRequiringManualIntervention ? (
-                                <div className="alert alert-danger mb-2">
-                                    Self-service downgrades are not yet supported.{' '}
-                                    <a
-                                        href={mailtoSales({
-                                            subject: `Downgrade subscription ${this.props.subscriptionID!}`,
-                                        })}
-                                    >
-                                        Contact sales
-                                    </a>{' '}
-                                    for help.
+    return (
+        <div className="new-product-subscription-payment-section">
+            <div className="form-text mb-2">
+                {previewInvoiceOrError === LOADING ? (
+                    <LoadingSpinner className="icon-inline" />
+                ) : !productSubscription || previewInvoiceOrError === null ? (
+                    <>&mdash;</>
+                ) : isErrorLike(previewInvoiceOrError) ? (
+                    <span className="text-danger">
+                        <ErrorIcon className="icon-inline" data-tooltip={previewInvoiceOrError.message} /> Error
+                    </span>
+                ) : previewInvoiceOrError.beforeInvoiceItem ? (
+                    <>
+                        <ProductSubscriptionBeforeAfterInvoiceItem
+                            beforeInvoiceItem={previewInvoiceOrError.beforeInvoiceItem}
+                            afterInvoiceItem={previewInvoiceOrError.afterInvoiceItem}
+                            className="mb-2"
+                        />
+                        {previewInvoiceOrError.isDowngradeRequiringManualIntervention ? (
+                            <div className="alert alert-danger mb-2">
+                                Self-service downgrades are not yet supported.{' '}
+                                <a
+                                    href={mailtoSales({
+                                        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                                        subject: `Downgrade subscription ${subscriptionID!}`,
+                                    })}
+                                >
+                                    Contact sales
+                                </a>{' '}
+                                for help.
+                            </div>
+                        ) : (
+                            !isEqual(
+                                previewInvoiceOrError.beforeInvoiceItem,
+                                previewInvoiceOrError.afterInvoiceItem
+                            ) && (
+                                <div className="mb-2">
+                                    Amount due: ${numberWithCommas(previewInvoiceOrError.price / 100)}
                                 </div>
-                            ) : (
-                                !isEqual(
-                                    this.state.previewInvoiceOrError.beforeInvoiceItem,
-                                    this.state.previewInvoiceOrError.afterInvoiceItem
-                                ) && (
-                                    <div className="mb-2">
-                                        Amount due: ${numberWithCommas(this.state.previewInvoiceOrError.price / 100)}
-                                    </div>
-                                )
-                            )}
-                        </>
-                    ) : (
-                        <>
-                            Total: ${numberWithCommas(this.state.previewInvoiceOrError.price / 100)} for{' '}
-                            {formatDistanceStrict(
-                                parseISO(this.state.previewInvoiceOrError.afterInvoiceItem.expiresAt),
-                                Date.now()
-                            )}{' '}
-                            ({formatUserCount(this.props.productSubscription.userCount)})
-                            {/* Include invisible LoadingSpinner to ensure that the height remains constant between loading and total. */}
-                            <LoadingSpinner className="icon-inline invisible" />
-                        </>
-                    )}
-                </div>
+                            )
+                        )}
+                    </>
+                ) : (
+                    <>
+                        Total: ${numberWithCommas(previewInvoiceOrError.price / 100)} for{' '}
+                        {formatDistanceStrict(parseISO(previewInvoiceOrError.afterInvoiceItem.expiresAt), Date.now())} (
+                        {formatUserCount(productSubscription.userCount)})
+                        {/* Include invisible LoadingSpinner to ensure that the height remains constant between loading and total. */}
+                        <LoadingSpinner className="icon-inline invisible" />
+                    </>
+                )}
             </div>
-        )
-    }
+        </div>
+    )
 }
 
 function queryPreviewProductSubscriptionInvoice(
