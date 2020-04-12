@@ -1,18 +1,8 @@
 import ErrorIcon from 'mdi-react/ErrorIcon'
 import ExternalLinkIcon from 'mdi-react/ExternalLinkIcon'
-import React from 'react'
-import { Observable, Subject, Subscription } from 'rxjs'
-import {
-    catchError,
-    distinctUntilChanged,
-    filter,
-    map,
-    mapTo,
-    startWith,
-    switchMap,
-    tap,
-    withLatestFrom,
-} from 'rxjs/operators'
+import React, { useState, useMemo, useEffect, useCallback } from 'react'
+import { Observable, Subject } from 'rxjs'
+import { catchError, map, mapTo, startWith, switchMap, tap } from 'rxjs/operators'
 import { gql } from '../../../../../../shared/src/graphql/graphql'
 import * as GQL from '../../../../../../shared/src/graphql/schema'
 import { asError, createAggregateError, ErrorLike, isErrorLike } from '../../../../../../shared/src/util/errors'
@@ -28,100 +18,70 @@ interface Props {
 
 const LOADING = 'loading' as const
 
-interface State {
-    /** The result of updating this subscription: null for done or not started, loading, or an error. */
-    updateOrError: typeof LOADING | null | ErrorLike
-}
-
 /**
  * SiteAdminCustomerBillingLink shows a link to the customer on the billing system associated with a user, if any.
  * It also supports setting or unsetting the association with the billing system.
  */
-export class SiteAdminCustomerBillingLink extends React.PureComponent<Props, State> {
-    public state: State = {
-        updateOrError: null,
-    }
+export const SiteAdminCustomerBillingLink: React.FunctionComponent<Props> = ({ customer, onDidUpdate }) => {
+    /** The result of updating this customer: null for done or not started, loading, or an error. */
+    const [updateOrError, setUpdateOrError] = useState<typeof LOADING | null | ErrorLike>(null)
 
-    private componentUpdates = new Subject<Props>()
-    private updates = new Subject<void>()
-    private subscriptions = new Subscription()
-
-    public componentDidMount(): void {
-        const customerChanges = this.componentUpdates.pipe(
-            map(props => props.customer),
-            distinctUntilChanged()
-        )
-
-        this.subscriptions.add(
-            this.updates
-                .pipe(
-                    withLatestFrom(customerChanges),
-                    map(([, { id, urlForSiteAdminBilling }]) => ({
-                        user: id,
-                        billingCustomerID: urlForSiteAdminBilling
-                            ? null
-                            : window.prompt('Enter new Stripe billing customer ID:', 'cus_ABCDEF12345678') || undefined,
-                    })),
-                    filter(
-                        // Ignore if the user pressed "Cancel".
-                        result => result.billingCustomerID !== undefined
-                    ),
-                    switchMap(({ user, billingCustomerID }) =>
-                        setCustomerBilling({ user, billingCustomerID }).pipe(
-                            mapTo(null),
-                            tap(() => this.props.onDidUpdate()),
-                            catchError(error => [asError(error)]),
-                            map(c => ({ updateOrError: c })),
-                            startWith({ updateOrError: LOADING })
-                        )
+    const updates = useMemo(() => new Subject<{ user: GQL.ID; billingCustomerID: string | null }>(), [])
+    useEffect(() => {
+        const subscription = updates
+            .pipe(
+                switchMap(({ user, billingCustomerID }) =>
+                    setCustomerBilling({ user, billingCustomerID }).pipe(
+                        mapTo(null),
+                        tap(() => onDidUpdate()),
+                        catchError((err: ErrorLike) => [asError(err)]),
+                        startWith(LOADING)
                     )
                 )
-                .subscribe(
-                    stateUpdate => this.setState(stateUpdate),
-                    error => console.error(error)
-                )
-        )
+            )
+            .subscribe(setUpdateOrError)
+        return () => subscription.unsubscribe()
+    }, [onDidUpdate, updates])
 
-        this.componentUpdates.next(this.props)
-    }
+    const onLinkBillingClick = useCallback(() => {
+        const billingCustomerID = window.prompt('Enter new Stripe billing customer ID:', 'cus_ABCDEF12345678')
 
-    public componentDidUpdate(): void {
-        this.componentUpdates.next(this.props)
-    }
+        // Ignore if the user pressed "Cancel" or did not enter any value.
+        if (!billingCustomerID) {
+            return
+        }
 
-    public componentWillUnmount(): void {
-        this.subscriptions.unsubscribe()
-    }
+        updates.next({ user: customer.id, billingCustomerID })
+    }, [customer.id, updates])
 
-    public render(): JSX.Element | null {
-        return (
-            <div className="site-admin-customer-billing-link">
-                <div className="d-flex align-items-center">
-                    {this.props.customer.urlForSiteAdminBilling && (
-                        <a href={this.props.customer.urlForSiteAdminBilling} className="mr-2 d-flex align-items-center">
-                            View customer account <ExternalLinkIcon className="icon-inline ml-1" />
-                        </a>
-                    )}
-                    {isErrorLike(this.state.updateOrError) && (
-                        <ErrorIcon
-                            className="icon-inline text-danger mr-2"
-                            data-tooltip={this.state.updateOrError.message}
-                        />
-                    )}
-                    <button
-                        type="button"
-                        className="btn btn-secondary"
-                        onClick={this.setCustomerBilling}
-                        disabled={this.state.updateOrError === LOADING}
-                    >
-                        {this.props.customer.urlForSiteAdminBilling ? 'Unlink' : 'Link billing customer'}
-                    </button>
-                </div>
+    const onUnlinkBillingClick = useCallback(() => updates.next({ user: customer.id, billingCustomerID: null }), [
+        customer.id,
+        updates,
+    ])
+
+    const customerHasLinkedBilling = customer.urlForSiteAdminBilling !== null
+    return (
+        <div className="site-admin-customer-billing-link">
+            <div className="d-flex align-items-center">
+                {customer.urlForSiteAdminBilling && (
+                    <a href={customer.urlForSiteAdminBilling} className="mr-2 d-flex align-items-center">
+                        View customer account <ExternalLinkIcon className="icon-inline ml-1" />
+                    </a>
+                )}
+                {isErrorLike(updateOrError) && (
+                    <ErrorIcon className="icon-inline text-danger mr-2" data-tooltip={updateOrError.message} />
+                )}
+                <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={customerHasLinkedBilling ? onUnlinkBillingClick : onLinkBillingClick}
+                    disabled={updateOrError === LOADING}
+                >
+                    {customerHasLinkedBilling ? 'Unlink' : 'Link billing customer'}
+                </button>
             </div>
-        )
-    }
-
-    private setCustomerBilling = (): void => this.updates.next()
+        </div>
+    )
 }
 
 function setCustomerBilling(args: GQL.ISetUserBillingOnDotcomMutationArguments): Observable<void> {
