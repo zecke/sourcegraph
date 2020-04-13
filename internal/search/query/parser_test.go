@@ -20,7 +20,6 @@ func Test_ScanParameter(t *testing.T) {
 			Input: `file:README.md`,
 			Want:  `{"field":"file","value":"README.md","negated":false}`,
 		},
-
 		{
 			Name:  "First char is colon",
 			Input: `:foo`,
